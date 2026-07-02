@@ -9,6 +9,7 @@ package push
 import (
 	"context"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/sideshow/apns2"
@@ -25,7 +26,19 @@ type Sender struct {
 	apnsSandbox *apns2.Client
 	topic       string
 	httpClient  *http.Client
+	// barkDefaultIcon is the image URL sent as the Bark `icon` when the
+	// notification has no post thumbnail, so PMs and comment replies show
+	// Apollo's icon instead of Bark's. Devices whose push URL pins ?icon=
+	// (the tweak does this when the user picked an alternate app icon)
+	// override both — bark-server gives query parameters priority over the
+	// JSON body.
+	barkDefaultIcon string
 }
+
+// defaultBarkIcon is Apollo's stock app icon, hosted in the Apollo-Reborn
+// repo alongside the per-alternate-icon PNGs the tweak pins via the push
+// URL. Override with BARK_DEFAULT_ICON.
+const defaultBarkIcon = "https://raw.githubusercontent.com/Apollo-Reborn/Apollo-Reborn/main/assets/bark-icons/default.png"
 
 // Result describes one delivery attempt. Sent mirrors apns2's res.Sent();
 // Status/Reason carry the rejection details when Sent is false but the
@@ -43,12 +56,17 @@ type Result struct {
 }
 
 func NewSender(logger *zap.Logger, key *token.Token, topic string) *Sender {
+	icon := os.Getenv("BARK_DEFAULT_ICON")
+	if icon == "" {
+		icon = defaultBarkIcon
+	}
 	return &Sender{
-		logger:      logger,
-		apnsProd:    apns2.NewTokenClient(key).Production(),
-		apnsSandbox: apns2.NewTokenClient(key).Development(),
-		topic:       topic,
-		httpClient:  &http.Client{Timeout: 10 * time.Second},
+		logger:          logger,
+		apnsProd:        apns2.NewTokenClient(key).Production(),
+		apnsSandbox:     apns2.NewTokenClient(key).Development(),
+		topic:           topic,
+		httpClient:      &http.Client{Timeout: 10 * time.Second},
+		barkDefaultIcon: icon,
 	}
 }
 

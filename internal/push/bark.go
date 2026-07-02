@@ -122,6 +122,13 @@ func (s *Sender) sendBark(ctx context.Context, device domain.Device, p *payload.
 		return Result{}, err
 	}
 
+	// No post thumbnail — show Apollo's icon rather than Bark's. (A ?icon=
+	// pinned on the device's push URL overrides either; query parameters
+	// beat the JSON body on bark-server.)
+	if req.Icon == "" {
+		req.Icon = s.barkDefaultIcon
+	}
+
 	body, err := json.Marshal(req)
 	if err != nil {
 		return Result{}, err

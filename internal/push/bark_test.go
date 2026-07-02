@@ -1,11 +1,17 @@
 package push
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/sideshow/apns2/payload"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/christianselig/apollo-backend/internal/domain"
 )
 
 // The sample payloads mirror the per-category test notifications in
@@ -163,4 +169,53 @@ func TestBarkRequestFromPayload_EmptyBodyFallsBackToTitle(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "Only a title", req.Body)
+}
+
+// sendBark fills in the default icon only when the payload carried no post
+// thumbnail — PMs and comment replies get Apollo's icon instead of Bark's,
+// while thumbnail-bearing watcher pushes keep the post image.
+func TestSendBark_DefaultIconFallback(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		payload  *payload.Payload
+		wantIcon string
+	}{
+		{
+			name:     "no thumbnail gets the default icon",
+			payload:  payload.NewPayload().AlertTitle("New message").Custom("type", "private-message"),
+			wantIcon: "https://example.com/apollo.png",
+		},
+		{
+			name:     "thumbnail wins over the default icon",
+			payload:  payload.NewPayload().AlertTitle("New post").Custom("thumbnail", "https://a.thumbs.redditmedia.com/Lr4b.jpg"),
+			wantIcon: "https://a.thumbs.redditmedia.com/Lr4b.jpg",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var got barkRequest
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				require.NoError(t, json.NewDecoder(r.Body).Decode(&got))
+				_, _ = w.Write([]byte(`{"code":200,"message":"success"}`))
+			}))
+			defer srv.Close()
+
+			s := &Sender{
+				httpClient:      srv.Client(),
+				barkDefaultIcon: "https://example.com/apollo.png",
+			}
+			d := domain.Device{Transport: domain.DeviceTransportBark, TransportEndpoint: srv.URL}
+
+			res, err := s.sendBark(context.Background(), d, tc.payload)
+			require.NoError(t, err)
+			assert.True(t, res.Sent)
+			assert.Equal(t, tc.wantIcon, got.Icon)
+		})
+	}
 }

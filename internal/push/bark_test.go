@@ -42,6 +42,21 @@ func TestBarkRequestFromPayload_CommentReply(t *testing.T) {
 	assert.Equal(t, "They don't even go here.", req.Body)
 	assert.Equal(t, "apollo://reddit.com/r/ottawa/comments/sqqk29", req.URL)
 	assert.Equal(t, "comment", req.Group)
+	// "traloop.wav" minus the extension: matches assets/bark-sounds/
+	// traloop.caf once bark-server appends ".caf".
+	assert.Equal(t, "traloop", req.Sound)
+}
+
+func TestBarkRequestFromPayload_NoSound(t *testing.T) {
+	t.Parallel()
+
+	req, err := barkRequestFromPayload(payload.NewPayload().AlertTitle("Quiet"))
+	require.NoError(t, err)
+	assert.Empty(t, req.Sound)
+
+	req, err = barkRequestFromPayload(payload.NewPayload().AlertTitle("Stock").Sound("default"))
+	require.NoError(t, err)
+	assert.Empty(t, req.Sound)
 }
 
 func TestBarkRequestFromPayload_PrivateMessage(t *testing.T) {

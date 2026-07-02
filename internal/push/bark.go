@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strings"
 
 	"github.com/sideshow/apns2/payload"
@@ -79,6 +80,17 @@ func barkRequestFromPayload(p *payload.Payload) (*barkRequest, error) {
 
 	if thumb, ok := customs["thumbnail"].(string); ok {
 		req.Icon = thumb
+	}
+
+	// Carry the payload's sound across, minus the file extension: Apollo's
+	// pushes say "traloop.wav", and the matching Bark-side file is
+	// assets/bark-sounds/traloop.caf (bark-server appends ".caf" to
+	// extensionless values). Plays if the user imported that .caf into the
+	// Bark app; iOS falls back to the default alert sound otherwise. Devices
+	// whose push URL pins ?sound= (the tweak, mirroring Apollo's in-app
+	// sound picker) override this — query beats body on bark-server.
+	if sound, ok := aps["sound"].(string); ok && sound != "" && sound != "default" {
+		req.Sound = strings.TrimSuffix(sound, filepath.Ext(sound))
 	}
 
 	req.URL = clickURL(customs)

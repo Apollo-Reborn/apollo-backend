@@ -28,6 +28,8 @@ func (p *postgresDeviceRepository) fetch(ctx context.Context, query string, args
 			&dev.ID,
 			&dev.APNSToken,
 			&dev.Sandbox,
+			&dev.Transport,
+			&dev.TransportEndpoint,
 		); err != nil {
 			return nil, err
 		}
@@ -38,7 +40,7 @@ func (p *postgresDeviceRepository) fetch(ctx context.Context, query string, args
 
 func (p *postgresDeviceRepository) GetByID(ctx context.Context, id int64) (domain.Device, error) {
 	query := `
-		SELECT id, apns_token, sandbox
+		SELECT id, apns_token, sandbox, transport, transport_endpoint
 		FROM devices
 		WHERE id = $1`
 
@@ -55,7 +57,7 @@ func (p *postgresDeviceRepository) GetByID(ctx context.Context, id int64) (domai
 
 func (p *postgresDeviceRepository) GetByAPNSToken(ctx context.Context, token string) (domain.Device, error) {
 	query := `
-		SELECT id, apns_token, sandbox
+		SELECT id, apns_token, sandbox, transport, transport_endpoint
 		FROM devices
 		WHERE apns_token = $1`
 
@@ -72,7 +74,7 @@ func (p *postgresDeviceRepository) GetByAPNSToken(ctx context.Context, token str
 
 func (p *postgresDeviceRepository) GetByAccountID(ctx context.Context, id int64) ([]domain.Device, error) {
 	query := `
-		SELECT devices.id, apns_token, sandbox
+		SELECT devices.id, apns_token, sandbox, transport, transport_endpoint
 		FROM devices
 		INNER JOIN devices_accounts ON devices.id = devices_accounts.device_id
 		WHERE devices_accounts.account_id = $1`
@@ -82,7 +84,7 @@ func (p *postgresDeviceRepository) GetByAccountID(ctx context.Context, id int64)
 
 func (p *postgresDeviceRepository) GetInboxNotifiableByAccountID(ctx context.Context, id int64) ([]domain.Device, error) {
 	query := `
-		SELECT devices.id, apns_token, sandbox
+		SELECT devices.id, apns_token, sandbox, transport, transport_endpoint
 		FROM devices
 		INNER JOIN devices_accounts ON devices.id = devices_accounts.device_id
 		WHERE devices_accounts.account_id = $1 AND
@@ -93,7 +95,7 @@ func (p *postgresDeviceRepository) GetInboxNotifiableByAccountID(ctx context.Con
 
 func (p *postgresDeviceRepository) GetWatcherNotifiableByAccountID(ctx context.Context, id int64) ([]domain.Device, error) {
 	query := `
-		SELECT devices.id, apns_token, sandbox
+		SELECT devices.id, apns_token, sandbox, transport, transport_endpoint
 		FROM devices
 		INNER JOIN devices_accounts ON devices.id = devices_accounts.device_id
 		WHERE devices_accounts.account_id = $1 AND
@@ -102,12 +104,24 @@ func (p *postgresDeviceRepository) GetWatcherNotifiableByAccountID(ctx context.C
 	return p.fetch(ctx, query, id)
 }
 
+// normalizeTransport keeps rows written by older tweak/client versions (which
+// send no transport field) behaving exactly as before: plain APNs.
+func normalizeTransport(dev *domain.Device) {
+	if dev.Transport == "" {
+		dev.Transport = domain.DeviceTransportAPNS
+	}
+}
+
 func (p *postgresDeviceRepository) CreateOrUpdate(ctx context.Context, dev *domain.Device) error {
+	normalizeTransport(dev)
+
+	// The conflict-update path is how an existing device switches transports
+	// (e.g. bark -> apns after a paid re-sign) or rotates its Bark push URL.
 	query := `
-		INSERT INTO devices (apns_token, sandbox)
-		VALUES ($1, $2)
+		INSERT INTO devices (apns_token, sandbox, transport, transport_endpoint)
+		VALUES ($1, $2, $3, $4)
 		ON CONFLICT(apns_token) DO
-			UPDATE SET sandbox = $2
+			UPDATE SET sandbox = $2, transport = $3, transport_endpoint = $4
 		RETURNING id`
 
 	return p.conn.QueryRow(
@@ -115,18 +129,22 @@ func (p *postgresDeviceRepository) CreateOrUpdate(ctx context.Context, dev *doma
 		query,
 		dev.APNSToken,
 		dev.Sandbox,
+		dev.Transport,
+		dev.TransportEndpoint,
 	).Scan(&dev.ID)
 }
 
 func (p *postgresDeviceRepository) Create(ctx context.Context, dev *domain.Device) error {
+	normalizeTransport(dev)
+
 	if err := dev.Validate(); err != nil {
 		return err
 	}
 
 	query := `
 		INSERT INTO devices
-			(apns_token, sandbox)
-		VALUES ($1, $2)
+			(apns_token, sandbox, transport, transport_endpoint)
+		VALUES ($1, $2, $3, $4)
 		RETURNING id`
 
 	return p.conn.QueryRow(
@@ -134,20 +152,24 @@ func (p *postgresDeviceRepository) Create(ctx context.Context, dev *domain.Devic
 		query,
 		dev.APNSToken,
 		dev.Sandbox,
+		dev.Transport,
+		dev.TransportEndpoint,
 	).Scan(&dev.ID)
 }
 
 func (p *postgresDeviceRepository) Update(ctx context.Context, dev *domain.Device) error {
+	normalizeTransport(dev)
+
 	if err := dev.Validate(); err != nil {
 		return err
 	}
 
 	query := `
 		UPDATE devices
-		SET sandbox = $2
+		SET sandbox = $2, transport = $3, transport_endpoint = $4
 		WHERE id = $1`
 
-	_, err := p.conn.Exec(ctx, query, dev.ID, dev.Sandbox)
+	_, err := p.conn.Exec(ctx, query, dev.ID, dev.Sandbox, dev.Transport, dev.TransportEndpoint)
 	return err
 }
 

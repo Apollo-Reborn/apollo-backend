@@ -20,7 +20,12 @@ CREATE TABLE accounts (
 CREATE TABLE devices (
     id SERIAL PRIMARY KEY,
     apns_token character varying(100) UNIQUE,
-    sandbox boolean
+    sandbox boolean,
+    -- Delivery transport: 'apns' (default), or 'bark' for free-sideload
+    -- devices that receive notifications as an HTTP POST to their Bark push
+    -- URL (transport_endpoint). Mirrors migrations/000014.
+    transport character varying(16) NOT NULL DEFAULT 'apns',
+    transport_endpoint text NOT NULL DEFAULT ''
 );
 
 CREATE TABLE devices_accounts (

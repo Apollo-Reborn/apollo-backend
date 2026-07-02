@@ -13,13 +13,13 @@ import (
 	"github.com/adjust/rmq/v5"
 	"github.com/go-redis/redis/v8"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/sideshow/apns2"
 	"github.com/sideshow/apns2/payload"
 	"github.com/sideshow/apns2/token"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 
 	"github.com/christianselig/apollo-backend/internal/domain"
+	"github.com/christianselig/apollo-backend/internal/push"
 	"github.com/christianselig/apollo-backend/internal/reddit"
 	"github.com/christianselig/apollo-backend/internal/repository"
 )
@@ -27,14 +27,14 @@ import (
 type subredditsWorker struct {
 	context.Context
 
-	logger *zap.Logger
-	tracer trace.Tracer
-	statsd statsd.ClientInterface
-	db     *pgxpool.Pool
-	redis  *redis.Client
-	queue  rmq.Connection
-	reddit *reddit.Client
-	apns   *token.Token
+	logger    *zap.Logger
+	tracer    trace.Tracer
+	statsd    statsd.ClientInterface
+	db        *pgxpool.Pool
+	redis     *redis.Client
+	queue     rmq.Connection
+	reddit    *reddit.Client
+	apns      *token.Token
 	apnsTopic string
 
 	consumers int
@@ -114,16 +114,14 @@ type subredditsConsumer struct {
 	*subredditsWorker
 	tag int
 
-	apnsSandbox    *apns2.Client
-	apnsProduction *apns2.Client
+	sender *push.Sender
 }
 
 func NewSubredditsConsumer(sw *subredditsWorker, tag int) *subredditsConsumer {
 	return &subredditsConsumer{
 		sw,
 		tag,
-		apns2.NewTokenClient(sw.apns),
-		apns2.NewTokenClient(sw.apns).Production(),
+		push.NewSender(sw.logger, sw.apns, sw.apnsTopic),
 	}
 }
 
@@ -420,19 +418,11 @@ func (sc *subredditsConsumer) Consume(delivery rmq.Delivery) {
 			body := fmt.Sprintf(subredditNotificationBodyFormat, subreddit.Name, post.Title)
 			payload.AlertBody(body)
 
-			notification := &apns2.Notification{}
-			notification.Topic = sc.apnsTopic
-			notification.DeviceToken = watcher.Device.APNSToken
-			notification.Payload = payload
-
-			client := sc.apnsProduction
-			if watcher.Device.Sandbox {
-				client = sc.apnsSandbox
-			}
-
-			res, err := client.Push(notification)
+			// Watcher sends never unregistered devices on failure, so
+			// res.ShouldUnregister is deliberately ignored here.
+			res, err := sc.sender.Send(ctx, watcher.Device, payload)
 			if err != nil {
-				_ = sc.statsd.Incr("apns.notification.errors", []string{}, 1)
+				_ = sc.statsd.Incr(push.ErrorsMetric(watcher.Device), []string{}, 1)
 				sc.logger.Error("failed to send notification",
 					zap.Error(err),
 					zap.Int64("subreddit#id", id),
@@ -440,18 +430,18 @@ func (sc *subredditsConsumer) Consume(delivery rmq.Delivery) {
 					zap.String("post#id", post.ID),
 					zap.String("apns", watcher.Device.APNSToken),
 				)
-			} else if !res.Sent() {
-				_ = sc.statsd.Incr("apns.notification.errors", []string{}, 1)
+			} else if !res.Sent {
+				_ = sc.statsd.Incr(push.ErrorsMetric(watcher.Device), []string{}, 1)
 				sc.logger.Error("notification not sent",
 					zap.Int64("subreddit#id", id),
 					zap.String("subreddit#name", subreddit.NormalizedName()),
 					zap.String("post#id", post.ID),
 					zap.String("apns", watcher.Device.APNSToken),
-					zap.Int("response#status", res.StatusCode),
+					zap.Int("response#status", res.Status),
 					zap.String("response#reason", res.Reason),
 				)
 			} else {
-				_ = sc.statsd.Incr("apns.notification.sent", []string{}, 1)
+				_ = sc.statsd.Incr(push.SentMetric(watcher.Device), []string{}, 1)
 				sc.logger.Info("sent notification",
 					zap.Int64("subreddit#id", id),
 					zap.String("subreddit#name", subreddit.NormalizedName()),

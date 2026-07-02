@@ -10,7 +10,6 @@ import (
 
 	"github.com/dustin/go-humanize/english"
 	"github.com/gorilla/mux"
-	"github.com/sideshow/apns2"
 	"github.com/sideshow/apns2/payload"
 	"go.uber.org/zap"
 
@@ -37,6 +36,28 @@ func (a *api) upsertDeviceHandler(w http.ResponseWriter, r *http.Request) {
 	// client sent so a self-host can pin the gateway to match its signing.
 	if v := os.Getenv("APPLE_APNS_SANDBOX"); v != "" {
 		d.Sandbox = v == "1" || strings.EqualFold(v, "true")
+	}
+
+	// The Apollo-Reborn tweak sends the transport in headers as well as the
+	// body: Apollo posts /v1/device as an NSURLSession upload task whose body
+	// is attached outside the request object, so the tweak's body rewrite
+	// doesn't always reach the wire — headers reliably do. Headers win when
+	// present.
+	if t := r.Header.Get("X-Apollo-Transport"); t != "" {
+		d.Transport = t
+		d.TransportEndpoint = r.Header.Get("X-Apollo-Transport-Endpoint")
+	}
+
+	// Older clients send no transport field — treat them as plain APNs.
+	// CreateOrUpdate historically skipped Validate(), so run it here: it
+	// rejects unknown transports and bark registrations without a usable
+	// http(s) push endpoint.
+	if d.Transport == "" {
+		d.Transport = domain.DeviceTransportAPNS
+	}
+	if err := d.Validate(); err != nil {
+		a.errorResponse(w, r, 422, err)
+		return
 	}
 
 	if err := a.deviceRepo.CreateOrUpdate(ctx, d); err != nil {
@@ -73,10 +94,7 @@ func (a *api) testDeviceHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	body := fmt.Sprintf("Active usernames are: %s. Tap me for more info!", english.OxfordWordSeries(users, "and"))
-	notification := &apns2.Notification{}
-	notification.Topic = a.apnsTopic
-	notification.DeviceToken = d.APNSToken
-	notification.Payload = payload.
+	p := payload.
 		NewPayload().
 		Category("test-notification").
 		Custom("test_accounts", strings.Join(users, ",")).
@@ -85,17 +103,12 @@ func (a *api) testDeviceHandler(w http.ResponseWriter, r *http.Request) {
 		MutableContent().
 		Sound("traloop.wav")
 
-	client := apns2.NewTokenClient(a.apns)
-	if !d.Sandbox {
-		client = client.Production()
-	}
-
-	res, err := client.Push(notification)
+	res, err := a.sender.Send(ctx, d, p)
 	if err != nil {
 		a.logger.Info("failed to send test notification", zap.Error(err))
 		a.errorResponse(w, r, 500, err)
-	} else if !res.Sent() {
-		a.errorResponse(w, r, 422, fmt.Errorf("errror sending notification: %d: %s", res.StatusCode, res.Reason))
+	} else if !res.Sent {
+		a.errorResponse(w, r, 422, fmt.Errorf("errror sending notification: %d: %s", res.Status, res.Reason))
 	} else {
 		w.WriteHeader(http.StatusOK)
 	}

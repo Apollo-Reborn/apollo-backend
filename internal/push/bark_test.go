@@ -1,0 +1,166 @@
+package push
+
+import (
+	"testing"
+
+	"github.com/sideshow/apns2/payload"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// The sample payloads mirror the per-category test notifications in
+// internal/api/notifications.go, which themselves mirror what the workers
+// build in production.
+
+func TestBarkRequestFromPayload_CommentReply(t *testing.T) {
+	t.Parallel()
+
+	p := payload.NewPayload().
+		MutableContent().
+		Sound("traloop.wav").
+		AlertTitle("Equinox_Shift in Protests set to disrupt Ottawa's downtown for 3rd straight weekend").
+		AlertBody("They don't even go here.").
+		Category("inbox-comment-reply").
+		Custom("account_id", "1ia22").
+		Custom("author", "Equinox_Shift").
+		Custom("comment_id", "hwp66zg").
+		Custom("post_id", "sqqk29").
+		Custom("subreddit", "ottawa").
+		Custom("type", "comment").
+		ThreadID("comment")
+
+	req, err := barkRequestFromPayload(p)
+	require.NoError(t, err)
+
+	assert.Equal(t, "Equinox_Shift in Protests set to disrupt Ottawa's downtown for 3rd straight weekend", req.Title)
+	assert.Equal(t, "They don't even go here.", req.Body)
+	assert.Equal(t, "apollo://reddit.com/r/ottawa/comments/sqqk29", req.URL)
+	assert.Equal(t, "comment", req.Group)
+}
+
+func TestBarkRequestFromPayload_PrivateMessage(t *testing.T) {
+	t.Parallel()
+
+	p := payload.NewPayload().
+		MutableContent().
+		Sound("traloop.wav").
+		AlertTitle("Message from welcomebot").
+		AlertSubtitle("Welcome to r/GriefSupport!").
+		AlertBody("**Welcome to r/GriefSupport!**").
+		Category("inbox-private-message").
+		Custom("account_id", "1ia22").
+		Custom("author", "welcomebot").
+		Custom("comment_id", "1d2oouy").
+		Custom("subreddit", "").
+		Custom("type", "private-message")
+
+	req, err := barkRequestFromPayload(p)
+	require.NoError(t, err)
+
+	assert.Equal(t, "Message from welcomebot", req.Title)
+	assert.Equal(t, "Welcome to r/GriefSupport!", req.Subtitle)
+	assert.Equal(t, "apollo://reborn/inbox", req.URL)
+	// No thread-id set; category is the grouping fallback.
+	assert.Equal(t, "inbox-private-message", req.Group)
+}
+
+func TestBarkRequestFromPayload_SubredditWatcher(t *testing.T) {
+	t.Parallel()
+
+	p := payload.NewPayload().
+		MutableContent().
+		Sound("traloop.wav").
+		AlertTitle("📣 “bug pics” Watcher").
+		AlertBody("r/pics: “A Goliath Stick Insect.”").
+		AlertSummaryArg("pics").
+		Category("subreddit-watcher").
+		Custom("author", "befarked247").
+		Custom("post_age", 1651409659.0).
+		Custom("post_id", "ufzaml").
+		Custom("post_title", "A Goliath Stick Insect.").
+		Custom("subreddit", "pics").
+		Custom("thumbnail", "https://a.thumbs.redditmedia.com/Lr4b.jpg").
+		ThreadID("subreddit-watcher")
+
+	req, err := barkRequestFromPayload(p)
+	require.NoError(t, err)
+
+	assert.Equal(t, "📣 “bug pics” Watcher", req.Title)
+	assert.Equal(t, "apollo://reddit.com/r/pics/comments/ufzaml", req.URL)
+	assert.Equal(t, "subreddit-watcher", req.Group)
+	assert.Equal(t, "https://a.thumbs.redditmedia.com/Lr4b.jpg", req.Icon)
+}
+
+func TestBarkRequestFromPayload_UsernameMention(t *testing.T) {
+	t.Parallel()
+
+	p := payload.NewPayload().
+		AlertTitle("Mention in “testimg”").
+		AlertBody("yo u/changelog what's good").
+		Category("inbox-username-mention-no-context").
+		Custom("comment_id", "i6xobpa").
+		Custom("post_id", "u02338").
+		Custom("subreddit", "calicosummer").
+		Custom("type", "username")
+
+	req, err := barkRequestFromPayload(p)
+	require.NoError(t, err)
+
+	assert.Equal(t, "apollo://reddit.com/r/calicosummer/comments/u02338", req.URL)
+}
+
+func TestBarkRequestFromPayload_Badge(t *testing.T) {
+	t.Parallel()
+
+	p := payload.NewPayload().
+		AlertTitle("Message from someone").
+		AlertBody("hi").
+		Badge(3).
+		Custom("type", "private-message")
+
+	req, err := barkRequestFromPayload(p)
+	require.NoError(t, err)
+
+	require.NotNil(t, req.Badge)
+	assert.Equal(t, 3, *req.Badge)
+}
+
+func TestBarkRequestFromPayload_TestBlastFallsBackToInbox(t *testing.T) {
+	t.Parallel()
+
+	// The api's testDeviceHandler payload has no post_id/subreddit customs.
+	p := payload.NewPayload().
+		Category("test-notification").
+		Custom("test_accounts", "changelog").
+		AlertTitle("📣 Hello, is this thing on?").
+		AlertBody("Active usernames are: changelog. Tap me for more info!").
+		MutableContent().
+		Sound("traloop.wav")
+
+	req, err := barkRequestFromPayload(p)
+	require.NoError(t, err)
+
+	assert.Equal(t, "apollo://reborn/inbox", req.URL)
+	assert.Equal(t, "test-notification", req.Group)
+}
+
+func TestClickURL_EscapesPathComponents(t *testing.T) {
+	t.Parallel()
+
+	got := clickURL(map[string]interface{}{
+		"post_id":   "abc123",
+		"subreddit": "r weird/name",
+	})
+	assert.Equal(t, "apollo://reddit.com/r/r%20weird%2Fname/comments/abc123", got)
+}
+
+func TestBarkRequestFromPayload_EmptyBodyFallsBackToTitle(t *testing.T) {
+	t.Parallel()
+
+	p := payload.NewPayload().AlertTitle("Only a title")
+
+	req, err := barkRequestFromPayload(p)
+	require.NoError(t, err)
+
+	assert.Equal(t, "Only a title", req.Body)
+}

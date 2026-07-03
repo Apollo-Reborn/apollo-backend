@@ -1,7 +1,6 @@
 package push
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -210,7 +209,6 @@ func TestSendBark_DefaultIconFallback(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -227,7 +225,7 @@ func TestSendBark_DefaultIconFallback(t *testing.T) {
 			}
 			d := domain.Device{Transport: domain.DeviceTransportBark, TransportEndpoint: srv.URL}
 
-			res, err := s.sendBark(context.Background(), d, tc.payload)
+			res, err := s.sendBark(t.Context(), d, tc.payload)
 			require.NoError(t, err)
 			assert.True(t, res.Sent)
 			assert.Equal(t, tc.wantIcon, got.Icon)

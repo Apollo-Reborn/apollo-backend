@@ -111,8 +111,16 @@ func barkRequestFromPayload(p *payload.Payload) (*barkRequest, error) {
 // uses. Private messages have no post to open, so they land on the inbox
 // (an Apollo-Reborn tweak deep link). Anything with a post lands on the
 // thread — the `apollo://reddit.com/<reddit path>` form Apollo routes
-// natively. Comment-level anchoring (/-/<comment_id>) is deliberately not
-// emitted until verified against Apollo's router on-device.
+// natively.
+//
+// When the payload names a comment (replies and mentions), the link anchors
+// it with `/_/<comment_id>/?context=1` — byte-for-byte the share-link format
+// Apollo itself generates, verified against the link-parser regex in the
+// Apollo binary. The slug placeholder must be `_`, NOT `-`: the parser
+// captures the comment id as `(\w+)` after an optional `(?:/\w+)?` slug, and
+// `-` isn't a \w character, so a `/-/` link silently degrades to opening the
+// post unanchored. context=1 shows the parent above the comment, matching
+// what a native notification tap does.
 func clickURL(customs map[string]interface{}) string {
 	if t, _ := customs["type"].(string); t == "private-message" {
 		return "apollo://reborn/inbox"
@@ -120,12 +128,17 @@ func clickURL(customs map[string]interface{}) string {
 
 	postID, _ := customs["post_id"].(string)
 	subreddit, _ := customs["subreddit"].(string)
-	if postID != "" && subreddit != "" {
-		return fmt.Sprintf("apollo://reddit.com/r/%s/comments/%s",
-			url.PathEscape(subreddit), url.PathEscape(postID))
+	if postID == "" || subreddit == "" {
+		return "apollo://reborn/inbox"
 	}
 
-	return "apollo://reborn/inbox"
+	if commentID, _ := customs["comment_id"].(string); commentID != "" {
+		return fmt.Sprintf("apollo://reddit.com/r/%s/comments/%s/_/%s/?context=1",
+			url.PathEscape(subreddit), url.PathEscape(postID), url.PathEscape(commentID))
+	}
+
+	return fmt.Sprintf("apollo://reddit.com/r/%s/comments/%s",
+		url.PathEscape(subreddit), url.PathEscape(postID))
 }
 
 func (s *Sender) sendBark(ctx context.Context, device domain.Device, p *payload.Payload) (Result, error) {

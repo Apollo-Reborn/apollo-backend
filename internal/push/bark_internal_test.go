@@ -39,7 +39,7 @@ func TestBarkRequestFromPayload_CommentReply(t *testing.T) {
 
 	assert.Equal(t, "Equinox_Shift in Protests set to disrupt Ottawa's downtown for 3rd straight weekend", req.Title)
 	assert.Equal(t, "They don't even go here.", req.Body)
-	assert.Equal(t, "apollo://reddit.com/r/ottawa/comments/sqqk29", req.URL)
+	assert.Equal(t, "apollo://reddit.com/r/ottawa/comments/sqqk29/_/hwp66zg/?context=1", req.URL)
 	assert.Equal(t, "comment", req.Group)
 	// "traloop.wav" minus the extension: matches assets/bark-sounds/
 	// traloop.caf once bark-server appends ".caf".
@@ -126,7 +126,7 @@ func TestBarkRequestFromPayload_UsernameMention(t *testing.T) {
 	req, err := barkRequestFromPayload(p)
 	require.NoError(t, err)
 
-	assert.Equal(t, "apollo://reddit.com/r/calicosummer/comments/u02338", req.URL)
+	assert.Equal(t, "apollo://reddit.com/r/calicosummer/comments/u02338/_/i6xobpa/?context=1", req.URL)
 }
 
 func TestBarkRequestFromPayload_Badge(t *testing.T) {
@@ -172,6 +172,21 @@ func TestClickURL_EscapesPathComponents(t *testing.T) {
 		"subreddit": "r weird/name",
 	})
 	assert.Equal(t, "apollo://reddit.com/r/r%20weird%2Fname/comments/abc123", got)
+}
+
+// The slug placeholder must be "_" — Apollo's link parser captures the
+// comment id as (\w+) after an optional (?:/\w+)? slug segment, and "-" is
+// not a \w character, so a /-/ link silently opens the post unanchored.
+func TestClickURL_CommentAnchorUsesUnderscoreSlug(t *testing.T) {
+	t.Parallel()
+
+	got := clickURL(map[string]interface{}{
+		"post_id":    "1um41tv",
+		"subreddit":  "ApolloReborn",
+		"comment_id": "ov9d35z",
+	})
+	assert.Equal(t, "apollo://reddit.com/r/ApolloReborn/comments/1um41tv/_/ov9d35z/?context=1", got)
+	assert.NotContains(t, got, "/-/")
 }
 
 func TestBarkRequestFromPayload_EmptyBodyFallsBackToTitle(t *testing.T) {

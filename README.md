@@ -45,6 +45,8 @@ The upstream backend was deeply tied to Christian's App Store deployment. This f
   docker compose --profile bark up -d
   ```
 
+  A Bark-only deployment needs no Apple credentials at all: leave every `APPLE_*` var empty and the services start with APNs disabled — Bark devices work normally, APNs device registrations and Live Activity registrations are rejected with a 422, and any leftover APNs-destined send logs an error instead of delivering.
+
   It listens on port 8080 (`BARK_SERVER_PORT` to change) and stores device registrations in the `barkdata` volume. Point the Bark iOS app at it (add server → `http://<host>:8080` or your reverse-proxied HTTPS URL); the app registers itself and shows a device key, and the Bark Push URL for Apollo's settings is `<server>/<device_key>`. That URL must be reachable **from the worker containers** — use a LAN IP or public hostname, never `localhost`. Delivery to the phone still rides Apple's push infrastructure via Bark's own certificate baked into bark-server, so no Apple Developer account is involved. Self-hosting keeps notification content off api.day.app, at the cost of exposing one more port; the hosted api.day.app works fine too if you'd rather not.
 
   Bark notifications carry Apollo's iconography instead of Bark's: pushes with a post thumbnail show the thumbnail, and everything else (PMs, comment replies) falls back to Apollo's app icon, hosted in the [Apollo-Reborn repo](https://github.com/Apollo-Reborn/Apollo-Reborn/tree/main/assets/bark-icons) (`BARK_DEFAULT_ICON` env var overrides the fallback URL). When the user has picked an alternate app icon in Apollo, the tweak pins that icon's PNG via an `?icon=` query parameter on the registered push URL — bark-server gives query parameters priority over the JSON body, so their chosen icon shows on every notification, thumbnails included.
@@ -57,28 +59,30 @@ The upstream backend was deeply tied to Christian's App Store deployment. This f
 - **Reddit edge WAF workarounds.** `Content-Type: application/x-www-form-urlencoded` is now set explicitly on the OAuth token POST (Go's `http.NewRequest` doesn't auto-set it), and `?raw_json=1` is scoped to `oauth.reddit.com/*` calls only (it triggers a 403 HTML block when sent to `www.reddit.com/api/v1/access_token`).
 - **Dockerized** — `Dockerfile` + `docker-compose.yml` replace the original Render-specific deployment.
 
-The result: the backend boots end-to-end with only Postgres, Redis, an APNs auth key, and a bundle ID. Everything else is opt-in.
+The result: the backend boots end-to-end with only Postgres, Redis, and either an APNs auth key + bundle ID or a Bark push URL per device. Everything else is opt-in.
 
 ## Quickstart with Docker
 
-Requires Docker + an APNs auth key (`.p8`) from a paid Apple Developer account.
+Requires Docker. An APNs auth key (`.p8`) from a paid Apple Developer account enables direct APNs delivery; without one, run in **Bark-only mode** (leave every `APPLE_*` var empty and use the `bark` profile — see the Bark transport section above).
 
 ```bash
 git clone https://github.com/Apollo-Reborn/apollo-backend
 cd apollo-backend
 
-# 1. Drop your APNs key
+# 1. Drop your APNs key (skip for Bark-only mode)
 mkdir -p secrets
 cp ~/Downloads/AuthKey_XXXXXXXXXX.p8 secrets/apple.p8
 
 # 2. Configure environment
 cp .env.docker.example .env.docker
-$EDITOR .env.docker   # fill in APPLE_KEY_ID, APPLE_TEAM_ID, APPLE_APNS_TOPIC,
-                      # APPLE_APNS_SANDBOX, REDDIT_* fallbacks, REGISTRATION_SECRET
+$EDITOR .env.docker   # APNs: fill in APPLE_KEY_PATH, APPLE_KEY_ID, APPLE_TEAM_ID,
+                      #   APPLE_APNS_TOPIC, APPLE_APNS_SANDBOX
+                      # Bark-only: leave all APPLE_* empty
+                      # Both: REDDIT_* fallbacks, REGISTRATION_SECRET
 
 # 3. Bring it up
-make docker-up
-make docker-logs      # follow output until health check passes
+make docker-up               # or: docker compose --profile bark up -d
+make docker-logs             # follow output until health check passes
 ```
 
 Verify the API is reachable:
@@ -97,16 +101,23 @@ You should now be able to point the tweak at `http://<your-host>:4000` (or your 
 | `DATABASE_CONNECTION_POOL_URL` | Postgres URL (via PgBouncer in transaction mode). **No query string** — `cmdutil.NewDatabasePool` appends `?pool_max_conns=…` and a second `?` makes pgx reject the URL. |
 | `REDIS_QUEUE_URL` | Redis backing rmq job queues. Configure `noeviction`. |
 | `REDIS_LOCKS_URL` | Redis backing the dedup locks (Lua script in `scheduler.go`). Can be the same instance as the queue Redis. |
+
+### Required for APNs delivery (all-or-nothing)
+
+Set **all four** to deliver over APNs, or leave **all four** empty to run in Bark-only mode (APNs disabled; APNs device registrations and Live Activities are rejected with a 422). Setting only some of them fails startup with an error naming the missing vars.
+
+| Var | Purpose |
+|---|---|
 | `APPLE_KEY_PATH` | Path to your APNs auth key `.p8` file. |
 | `APPLE_KEY_ID` | APNs key ID from developer.apple.com. |
 | `APPLE_TEAM_ID` | Your Apple Developer team ID. |
-| `APPLE_APNS_TOPIC` | Bundle ID of the sideloaded Apollo build (e.g. `com.you.Leto`). Used as `apns-topic` on every push. Crashes at startup if unset. **Must not be `com.christianselig.Apollo`** — see [Before you start](#before-you-start). |
+| `APPLE_APNS_TOPIC` | Bundle ID of the sideloaded Apollo build (e.g. `com.you.Leto`). Used as `apns-topic` on every push. **Must not be `com.christianselig.Apollo`** — see [Before you start](#before-you-start). |
 
 ## Optional environment variables
 
 | Var | Default | Effect |
 |---|---|---|
-| `APPLE_APNS_SANDBOX` | unset | Set to `true` to override Apollo's `sandbox=false` registrations and route pushes through `api.sandbox.push.apple.com`. Required for sideloaded builds signed under a dev cert. |
+| `APPLE_APNS_SANDBOX` | unset | Set to `true` to override Apollo's `sandbox=false` registrations and route pushes through `api.sandbox.push.apple.com`. Required for sideloaded builds signed under a dev cert. Ignored in Bark-only mode. |
 | `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET`, `REDDIT_REDIRECT_URI`, `REDDIT_USER_AGENT` | unset | Fallback OAuth credentials used when the tweak fails to inject them per-account at registration time. Single-tenant deployments can set these and skip per-account configuration entirely. |
 | `REGISTRATION_SECRET` | unset | If set, registration endpoints require `X-Registration-Token: <value>`. Off by default for local/private-network use. |
 | `STATSD_URL` | unset | If set, emits metrics to the given UDP endpoint. If unset, all metrics no-op. |

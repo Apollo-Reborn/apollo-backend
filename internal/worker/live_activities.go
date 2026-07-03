@@ -89,7 +89,10 @@ func (law *liveActivitiesWorker) Start() error {
 		return err
 	}
 
-	law.logger.Info("starting up live activities worker", zap.Int("consumers", law.consumers))
+	law.logger.Info("starting up live activities worker",
+		zap.Int("consumers", law.consumers),
+		zap.Bool("apns_enabled", law.apns != nil),
+	)
 
 	prefetchLimit := int64(law.consumers * 4)
 
@@ -124,12 +127,17 @@ type liveActivitiesConsumer struct {
 }
 
 func NewLiveActivitiesConsumer(law *liveActivitiesWorker, tag int) *liveActivitiesConsumer {
-	return &liveActivitiesConsumer{
-		law,
-		tag,
-		apns2.NewTokenClient(law.apns).Production(),
-		apns2.NewTokenClient(law.apns).Development(),
+	lac := &liveActivitiesConsumer{
+		liveActivitiesWorker: law,
+		tag:                  tag,
 	}
+	// Bark-only mode (nil token): leave the clients nil. Live Activities are
+	// APNs-only, so Consume drops jobs instead of pushing.
+	if law.apns != nil {
+		lac.papns = apns2.NewTokenClient(law.apns).Production()
+		lac.dapns = apns2.NewTokenClient(law.apns).Development()
+	}
+	return lac
 }
 
 func (lac *liveActivitiesConsumer) Consume(delivery rmq.Delivery) {
@@ -168,6 +176,16 @@ func (lac *liveActivitiesConsumer) Consume(delivery rmq.Delivery) {
 	}()
 
 	logger.Debug("starting job")
+
+	// Live Activities require APNs; a Bark-only backend can never deliver
+	// them. Delete the row so the scheduler stops re-enqueueing it every
+	// batch (registration is also rejected with a 422 in this mode — this
+	// catches rows that predate the mode switch).
+	if lac.apns == nil {
+		logger.Warn("APNs disabled (Bark-only mode); dropping live activity")
+		_ = lac.liveActivityRepo.Delete(ctx, at)
+		return
+	}
 
 	la, err := lac.liveActivityRepo.Get(ctx, at)
 	if err != nil {

@@ -151,6 +151,13 @@ services:
   # Apple Developer account is needed. Device registrations live in
   # barkdata (bolt DB) — persist it or every app reinstall needs re-adding
   # the server.
+  #
+  # Bark-only deployments (no paid Apple account) can leave every APPLE_*
+  # var in .env.docker empty: all services start with APNs disabled
+  # ("Bark-only mode" in the logs), Bark devices work normally, and APNs
+  # device / Live Activity registrations are rejected with a 422. Note the
+  # --profile flag only ADDS this container — the rest of the stack always
+  # runs and is required either way.
   bark-server:
     image: finab/bark-server:v2.3.5
     profiles: ["bark"]

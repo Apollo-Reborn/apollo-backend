@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/DataDog/datadog-go/statsd"
@@ -32,40 +33,49 @@ func NewLogger(service string) *zap.Logger {
 }
 
 // LoadAPNS reads the four APNs env vars (APPLE_KEY_PATH, APPLE_KEY_ID,
-// APPLE_TEAM_ID, APPLE_APNS_TOPIC) and returns the signing token plus topic.
-// Returns a descriptive error naming the missing var or unreadable file so
-// startup failures show up as a single log line instead of a panic stack.
+// APPLE_TEAM_ID, APPLE_APNS_TOPIC) and has three outcomes:
+//
+//   - all four set: returns the signing token plus topic (APNs enabled)
+//   - all four empty/unset: returns (nil, "", nil) — APNs disabled, the
+//     deployment is Bark-only and callers must tolerate a nil token
+//   - partially set: returns an error naming the missing vars, so a typo'd
+//     config fails fast instead of silently running Bark-only
+//
+// An empty value counts as unset (env_file lines like APPLE_KEY_ID= yield ""
+// which os.Getenv can't distinguish from absent). APPLE_APNS_SANDBOX and
+// BARK_DEFAULT_ICON are independent knobs, deliberately not part of the
+// all-or-nothing set.
 func LoadAPNS() (*token.Token, string, error) {
-	keyPath := os.Getenv("APPLE_KEY_PATH")
-	if keyPath == "" {
-		return nil, "", fmt.Errorf("APPLE_KEY_PATH env var is required (path to the APNs .p8 auth key)")
+	vars := []string{"APPLE_KEY_PATH", "APPLE_KEY_ID", "APPLE_TEAM_ID", "APPLE_APNS_TOPIC"}
+	var set, missing []string
+	for _, v := range vars {
+		if os.Getenv(v) == "" {
+			missing = append(missing, v)
+		} else {
+			set = append(set, v)
+		}
 	}
 
+	if len(set) == 0 {
+		return nil, "", nil
+	}
+	if len(missing) > 0 {
+		return nil, "", fmt.Errorf(
+			"partial APNs config: %s set but %s missing; set all four APPLE_* vars for APNs delivery, or unset all four for Bark-only mode",
+			strings.Join(set, ", "), strings.Join(missing, ", "))
+	}
+
+	keyPath := os.Getenv("APPLE_KEY_PATH")
 	authKey, err := token.AuthKeyFromFile(keyPath)
 	if err != nil {
 		return nil, "", fmt.Errorf("loading APNs auth key from APPLE_KEY_PATH (%s): %w", keyPath, err)
 	}
 
-	keyID := os.Getenv("APPLE_KEY_ID")
-	if keyID == "" {
-		return nil, "", fmt.Errorf("APPLE_KEY_ID env var is required (APNs key ID from developer.apple.com)")
-	}
-
-	teamID := os.Getenv("APPLE_TEAM_ID")
-	if teamID == "" {
-		return nil, "", fmt.Errorf("APPLE_TEAM_ID env var is required (Apple Developer team ID)")
-	}
-
-	topic := os.Getenv("APPLE_APNS_TOPIC")
-	if topic == "" {
-		return nil, "", fmt.Errorf("APPLE_APNS_TOPIC env var is required (bundle ID of the sideloaded Apollo build)")
-	}
-
 	return &token.Token{
 		AuthKey: authKey,
-		KeyID:   keyID,
-		TeamID:  teamID,
-	}, topic, nil
+		KeyID:   os.Getenv("APPLE_KEY_ID"),
+		TeamID:  os.Getenv("APPLE_TEAM_ID"),
+	}, os.Getenv("APPLE_APNS_TOPIC"), nil
 }
 
 func NewStatsdClient(tags ...string) (statsd.ClientInterface, error) {

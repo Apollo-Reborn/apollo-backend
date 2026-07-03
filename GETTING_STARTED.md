@@ -52,10 +52,15 @@ yourself (and optionally a few friends on the same build) — it's **single-tena
 These five things are **required**. Skipping any of them produces failures that look like backend
 bugs but aren't — so confirm each one before you start.
 
-1. **A paid Apple Developer account ($99/year).** Apple only grants the push-notification
+1. **A paid Apple Developer account ($99/year) — OR Bark.** Apple only grants the push-notification
    entitlement (`aps-environment`) to paid teams. With a *free* account you can register devices and
-   everything looks fine, but **the pushes never arrive**. Sign up at
-   [developer.apple.com/programs](https://developer.apple.com/programs/).
+   everything looks fine, but **the pushes never arrive** over APNs. Sign up at
+   [developer.apple.com/programs](https://developer.apple.com/programs/) — or skip the paid account
+   entirely by delivering through the free [Bark](https://apps.apple.com/us/app/bark-custom-notifications/id1403753865)
+   app instead: leave every `APPLE_*` value in `.env.docker` empty (the backend then runs in
+   **Bark-only mode**), skip [Step 3](#3-set-up-apple-app-id-apns-key-team-id), and follow the
+   bark-server notes in [Step 5](#5-start-the-backend). Bark-only trade-offs: Live Activities don't
+   work (they're APNs-only), and notification content transits the Bark relay.
 
 2. **Your own custom bundle ID — never `com.christianselig.Apollo`.** Reddit's edge firewall blocks
    the original Apollo bundle ID: any request whose User-Agent contains that string gets a `403`
@@ -162,6 +167,9 @@ from GitHub Container Registry (`ghcr.io/apollo-reborn/apollo-backend`) automati
 
 ## 3. Set up Apple: App ID, APNs key, Team ID
 
+> **Bark-only mode?** Skip this whole step. Leave all four `APPLE_*` values empty in
+> [Step 4b](#4b-create-your-environment-file) and the backend starts with APNs disabled.
+
 This is the part the rest of the documentation assumes you already know. Here it is in full. You'll
 do all of this at **[developer.apple.com/account](https://developer.apple.com/account)**.
 
@@ -226,6 +234,8 @@ Copy it — this is your `APPLE_TEAM_ID`.
 
 ### 4a. Drop the APNs key into the project
 
+*(Bark-only mode: skip this — there is no key.)*
+
 From the `apollo-backend` directory:
 
 ```bash
@@ -234,8 +244,8 @@ cp ~/Downloads/AuthKey_XXXXXXXXXX.p8 secrets/apple.p8
 ```
 
 (Adjust the path to wherever your downloaded `.p8` is.) The compose stack mounts this read-only at
-`/etc/secrets/apple.p8` inside the containers, which is the default `APPLE_KEY_PATH` — so the
-filename **must** be `secrets/apple.p8`.
+`/etc/secrets/apple.p8` inside the containers — so the filename **must** be `secrets/apple.p8`, and
+you'll set `APPLE_KEY_PATH=/etc/secrets/apple.p8` in the next step.
 
 ### 4b. Create your environment file
 
@@ -243,14 +253,19 @@ filename **must** be `secrets/apple.p8`.
 cp .env.docker.example .env.docker
 ```
 
-Now open `.env.docker` in any text editor and fill in these values:
+Now open `.env.docker` in any text editor and fill in these values.
+
+The four `APPLE_*` values are **all-or-nothing**: set all four for APNs delivery, or leave all four
+empty for **Bark-only mode** (a partial set fails startup with an error naming what's missing).
+Bark-only users leave this whole block blank and skip to `REGISTRATION_SECRET`:
 
 | Variable | Set it to |
 |---|---|
+| `APPLE_KEY_PATH` | `/etc/secrets/apple.p8` — where the compose stack mounts the key from [4a](#4a-drop-the-apns-key-into-the-project). |
 | `APPLE_KEY_ID` | Your Key ID from [3c](#3c-create-an-apns-auth-key-the-p8-file) (e.g. `ABC123XYZ9`). |
 | `APPLE_TEAM_ID` | Your Team ID from [3d](#3d-find-your-team-id) (e.g. `A1B2C3D4E5`). |
-| `APPLE_APNS_TOPIC` | **Your bundle ID** (e.g. `com.yourname.Apollo`). ⚠️ The example file ships with `com.christianselig.Apollo` as a placeholder — **you must change it**, or every Reddit call gets blocked. |
-| `APPLE_APNS_SANDBOX` | `true` — sideloaded builds signed with a development certificate need the **sandbox** APNs gateway. Leaving this off is the most common cause of `BadDeviceToken`. |
+| `APPLE_APNS_TOPIC` | **Your bundle ID** (e.g. `com.yourname.Apollo`). ⚠️ Never `com.christianselig.Apollo` — Reddit blocks it, so every Reddit call gets a 403. |
+| `APPLE_APNS_SANDBOX` | `true` — sideloaded builds signed with a development certificate need the **sandbox** APNs gateway. Leaving this off is the most common cause of `BadDeviceToken`. (Ignored in Bark-only mode.) |
 | `REGISTRATION_SECRET` | A long random string of your choosing (e.g. the output of `openssl rand -hex 24`). This stops strangers from registering against your backend. Optional on a private LAN, **strongly recommended before you expose anything to the internet** ([Step 8](#8-optional-open-it-up-to-the-internet)). |
 
 **About the Reddit credentials (`REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET`, `REDDIT_REDIRECT_URI`,
@@ -264,7 +279,6 @@ here too. If you do, the **User Agent must follow Reddit's format**, including y
 [tweak's README](https://github.com/Apollo-Reborn/Apollo-Reborn) for the recommended setup.
 
 **Leave these defaults alone** (they're already correct for the bundled stack):
-- `APPLE_KEY_PATH` stays `/etc/secrets/apple.p8`.
 - The Postgres and Redis URLs point at the built-in containers. ⚠️ Don't append a query string (like
   `?sslmode=disable`) to `DATABASE_CONNECTION_POOL_URL` — the app appends its own `?pool_max_conns=…`
   and a second `?` makes the database driver reject the URL.
@@ -308,11 +322,13 @@ You should get:
 
 🎉 If you see that, the backend is up.
 
-> **If the `api` container keeps restarting:** it's almost always a missing Apple value or an
-> unreadable key. When `APPLE_KEY_ID`, `APPLE_TEAM_ID`, or `APPLE_APNS_TOPIC` is missing — or the
-> `.p8` file isn't where it should be — the process **logs the exact problem and exits**, then
-> Docker restarts it in a loop. Run `make docker-logs` and read the error; it names the missing
-> variable. Fix `.env.docker` (or the key path), then `make docker-up` again.
+> **If the `api` or worker containers keep restarting:** it's almost always a *partial* Apple
+> config or an unreadable key. When only some of `APPLE_KEY_PATH` / `APPLE_KEY_ID` /
+> `APPLE_TEAM_ID` / `APPLE_APNS_TOPIC` are set — or the `.p8` file isn't where `APPLE_KEY_PATH`
+> says — the process **logs the exact problem and exits**, then Docker restarts it in a loop. Run
+> `make docker-logs` and read the error; it names the missing variables. Fix `.env.docker` (or the
+> key path), then `make docker-up` again. Leaving all four empty is *not* an error — that's
+> Bark-only mode, and the logs say so: `APNs disabled (no APPLE_* env vars set)`.
 
 ---
 
@@ -593,15 +609,15 @@ the order you'd hit them:
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `curl .../v1/health` refuses the connection | Containers still starting, or one crashed | Wait a few seconds; then `make docker-logs` to see what failed |
-| `api` container restart-loops | Missing `APPLE_KEY_ID` / `APPLE_TEAM_ID` / `APPLE_APNS_TOPIC`, or the `.p8` isn't at `secrets/apple.p8` | Read the exact error in `make docker-logs`, fix `.env.docker` or the key path, `make docker-up` |
+| `api` / worker containers restart-loop | *Partial* `APPLE_*` config (some set, some missing), or the `.p8` isn't at `secrets/apple.p8` | Read the exact error in `make docker-logs`; set all four `APPLE_*` vars for APNs or empty all four for Bark-only mode, then `make docker-up` |
 | App's **Test Connection** fails, but `curl localhost:4000/v1/health` works on the server | Phone can't reach the server: wrong IP/port, different network, or firewall | Use the server's LAN IP (not `localhost`); confirm phone and server are on the same Wi-Fi (or finish [Step 8](#8-optional-open-it-up-to-the-internet)) |
-| Device registers, but **no push ever arrives** | Free Apple account (no push entitlement), or wildcard profile instead of an explicit App ID | Use a paid account and the explicit App ID with Push enabled ([Step 3](#3-set-up-apple-app-id-apns-key-team-id)) |
+| Device registers, but **no push ever arrives** | Free Apple account (no push entitlement), or wildcard profile instead of an explicit App ID | Use a paid account and the explicit App ID with Push enabled ([Step 3](#3-set-up-apple-app-id-apns-key-team-id)), or switch to Bark delivery (free account, [Step 5](#5-start-the-backend)) |
 | `BadDeviceToken` in the logs | APNs sandbox/production mismatch | Set `APPLE_APNS_SANDBOX=true` and restart |
 | `403 "blocked by network security"` HTML on Reddit calls | Bundle ID / User-Agent still contains `com.christianselig.Apollo` | Re-sign under your own bundle ID; fix `APPLE_APNS_TOPIC` and the tweak's User Agent |
 | `oauth revoked` right after a *successful* token refresh | User Agent missing the `(by /u/yourname)` suffix | Use a UA like `ios:com.yourname.Apollo:v1.0 (by /u/you)` |
 | First inbox message didn't notify | Expected warmup behavior | The second message onward push; or run the `UPDATE accounts SET check_count = 1` shortcut ([7c](#7c-the-first-message-warmup-gotcha)) |
 | Push works on Wi-Fi but **not on cellular** | Backend isn't reachable from the internet | Complete [Step 8](#8-optional-open-it-up-to-the-internet) |
-| Live Activity starts but never updates | `POST /v1/live_activities` got a 422 (account not registered yet) or 401 (tweak build too old to send the registration token on this path), or `BadDeviceToken` on the push (sandbox mismatch) | Check `docker compose logs api worker-live-activities`; register the account first, update the tweak, or fix `APPLE_APNS_SANDBOX` ([7d](#7d-optional-verify-live-activities)) |
+| Live Activity starts but never updates | `POST /v1/live_activities` got a 422 (account not registered yet, or the backend is in Bark-only mode — Live Activities require APNs) or 401 (tweak build too old to send the registration token on this path), or `BadDeviceToken` on the push (sandbox mismatch) | Check `docker compose logs api worker-live-activities`; register the account first, update the tweak, or fix `APPLE_APNS_SANDBOX` ([7d](#7d-optional-verify-live-activities)) |
 | HTTPS certificate won't issue (Caddy) | DNS not yet pointing at the host, or ports 80/443 not reachable from outside | Confirm the A record resolves to your IP and that 80/443 are forwarded/open; behind CGNAT, use [Cloudflare Tunnel](#8c-cloudflare-tunnel-no-port-forward-works-behind-cgnat) |
 | Port-forwarding never works no matter what | You're behind CGNAT | Use [Cloudflare Tunnel](#8c-cloudflare-tunnel-no-port-forward-works-behind-cgnat) |
 

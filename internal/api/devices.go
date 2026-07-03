@@ -60,6 +60,14 @@ func (a *api) upsertDeviceHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A Bark-only backend (no APPLE_* config) can never deliver to an APNs
+	// device; reject at registration so the misconfiguration is visible in
+	// the app instead of as silent per-send failures in the worker logs.
+	if !d.IsBark() && a.apns == nil {
+		a.errorResponse(w, r, 422, fmt.Errorf("this backend runs in Bark-only mode (APNs not configured); set a Bark push URL in Apollo's settings and re-register"))
+		return
+	}
+
 	if err := a.deviceRepo.CreateOrUpdate(ctx, d); err != nil {
 		a.errorResponse(w, r, 500, err)
 		return

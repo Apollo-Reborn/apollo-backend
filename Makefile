@@ -19,13 +19,16 @@ $(BREW_PREFIX)/bin/migrate:
 docker-build:
 	docker compose build
 
+# --build: `docker compose up` alone reuses whatever app image was built
+# last, so after a `git pull` you'd silently keep running the old code.
+# With layer caching a no-change rebuild takes seconds.
 docker-up:
-	docker compose up -d
+	docker compose up -d --build
 
 # Also start the self-hosted Bark relay for free-sideload notification
 # delivery (see README "Bark transport").
 docker-up-bark:
-	docker compose --profile bark up -d
+	docker compose --profile bark up -d --build
 
 # --profile bark so a bark-server started via docker-up-bark is torn down
 # too; harmless when it was never started.

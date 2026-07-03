@@ -139,7 +139,10 @@ services:
   # Self-hosted Bark relay for free-sideload notification delivery (Bark
   # devices registered with transport=bark). Opt-in via the "bark" profile:
   #
-  #   docker compose --profile bark up -d
+  #   docker compose --profile bark up -d --build
+  #
+  # (--build because plain `up` reuses the previously built app image —
+  # after a `git pull` you'd silently keep running the old code.)
   #
   # Setup: in the Bark iOS app add this server (http://<host>:8080 or your
   # reverse-proxied URL) — the app registers itself and shows a device key;

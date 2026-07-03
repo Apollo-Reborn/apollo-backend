@@ -155,13 +155,17 @@ git clone https://github.com/Apollo-Reborn/apollo-backend
 cd apollo-backend
 ```
 
-You **do not need Go or any build tools.** The bundled `docker-compose.yml` pulls a prebuilt image
-from GitHub Container Registry (`ghcr.io/apollo-reborn/apollo-backend`) automatically.
+You **do not need Go or any build tools** — the app image is built *inside* Docker from the code
+you just cloned (that's what the `--build` in `make docker-up` does). Building this way keeps the
+running containers in sync with your checkout: after a `git pull`, the next `make docker-up`
+rebuilds automatically.
 
-> **Only if you fork and change the code:** you'll need to build your own image instead of pulling.
-> Use `make docker-build` (or `docker compose up -d --build`). Note that `docker compose up` reuses
-> the cached image, so **code changes require `--build`** to take effect. You can also point
-> `APOLLO_IMAGE` at your own registry. Most people running this as-is can ignore all of that.
+> **Prefer the prebuilt image?** One is published to GitHub Container Registry
+> (`ghcr.io/apollo-reborn/apollo-backend:latest`, the compose file's default tag — override with
+> `APOLLO_IMAGE`): run `docker compose pull` and then plain `docker compose up -d` (no `--build`).
+> Two caveats: the registry image is only published from `main` (unmerged branches aren't in it),
+> and without `--build` a `git pull` alone never changes what's running — you must `pull` again.
+> Most people should just use `make docker-up`.
 
 ---
 
@@ -290,8 +294,12 @@ here too. If you do, the **User Agent must follow Reddit's format**, including y
 Bring the whole stack up in the background:
 
 ```bash
-make docker-up      # same as: docker compose up -d
+make docker-up      # same as: docker compose up -d --build
 ```
+
+(The `--build` matters: plain `docker compose up` reuses the app image it built last time, so after
+a `git pull` you'd silently keep running the old code. A rebuild with nothing changed takes
+seconds thanks to layer caching.)
 
 Then follow the logs until things settle:
 
@@ -306,7 +314,7 @@ This starts everything the backend needs, each in its own container:
 - **api** — the HTTP server (port **4000**) the app talks to
 - **scheduler** — decides what to check and when
 - **worker-notifications / -subreddits / -trending / -users / -stuck-notifications** — do the work
-- **bark-server** *(optional, off by default)* — a self-hosted [Bark](https://github.com/Finb/bark-server) relay (port **8080**) for delivering notifications to builds signed with a **free** Apple ID, which can never receive APNs. Start it with `docker compose --profile bark up -d`. Setup: install the free [Bark app](https://apps.apple.com/us/app/bark-custom-notifications/id1403753865), add your server in it (`http://<host>:8080` — use a LAN IP or public hostname the phone *and* the backend containers can reach, not `localhost`), then copy the push URL it shows (`<server>/<device key>`) into Apollo's **Settings > General > Custom API > Bark Push URL** and flip on **Bark Delivery**. You can also skip self-hosting and use Bark's default `https://api.day.app/<device key>` — but then notification content transits Bark's hosted relay in plaintext. Notifications show Apollo's icon (or the post thumbnail, or the alternate app icon selected in Apollo) rather than Bark's — see `BARK_DEFAULT_ICON` in the README if you want to override the fallback. Apollo's notification sounds work too if you import the matching `.caf` from [Apollo-Reborn's assets/bark-sounds](https://github.com/Apollo-Reborn/Apollo-Reborn/tree/main/assets/bark-sounds) into the Bark app (Service tab → Alert Sound → view all sounds → Upload Sound); otherwise the default tone plays.
+- **bark-server** *(optional, off by default)* — a self-hosted [Bark](https://github.com/Finb/bark-server) relay (port **8080**) for delivering notifications to builds signed with a **free** Apple ID, which can never receive APNs. Start it with `docker compose --profile bark up -d --build`. Setup: install the free [Bark app](https://apps.apple.com/us/app/bark-custom-notifications/id1403753865), add your server in it (`http://<host>:8080` — use a LAN IP or public hostname the phone *and* the backend containers can reach, not `localhost`), then copy the push URL it shows (`<server>/<device key>`) into Apollo's **Settings > General > Custom API > Bark Push URL** and flip on **Bark Delivery**. You can also skip self-hosting and use Bark's default `https://api.day.app/<device key>` — but then notification content transits Bark's hosted relay in plaintext. Notifications show Apollo's icon (or the post thumbnail, or the alternate app icon selected in Apollo) rather than Bark's — see `BARK_DEFAULT_ICON` in the README if you want to override the fallback. Apollo's notification sounds work too if you import the matching `.caf` from [Apollo-Reborn's assets/bark-sounds](https://github.com/Apollo-Reborn/Apollo-Reborn/tree/main/assets/bark-sounds) into the Bark app (Service tab → Alert Sound → view all sounds → Upload Sound); otherwise the default tone plays.
 
 ### Confirm it's healthy
 
@@ -579,13 +587,12 @@ cat apollo-backup-YYYY-MM-DD.sql | docker compose exec -T postgres psql -U apoll
 
 ```bash
 git pull
-docker compose pull        # grab the latest prebuilt image
-make docker-up             # recreate containers with the new image
+make docker-up             # rebuilds the image from the pulled code and recreates containers
 ```
 
-Schema changes apply automatically — the `migrate` container runs on every startup. (If you build
-your own image from forked code, use `make docker-build && make docker-up` instead of
-`docker compose pull`.)
+Schema changes apply automatically — the `migrate` container runs on every startup. (If you use
+the prebuilt registry image instead of building, run `docker compose pull` before
+`docker compose up -d` — a `git pull` alone changes nothing in that flow.)
 
 **Check on it.**
 

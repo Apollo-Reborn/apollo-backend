@@ -42,7 +42,7 @@ The upstream backend was deeply tied to Christian's App Store deployment. This f
   A self-hosted [bark-server](https://github.com/Finb/bark-server) ships in `docker-compose.yml` behind the opt-in `bark` profile:
 
   ```bash
-  docker compose --profile bark up -d
+  docker compose --profile bark up -d --build
   ```
 
   A Bark-only deployment needs no Apple credentials at all: leave every `APPLE_*` var empty and the services start with APNs disabled — Bark devices work normally, APNs device registrations and Live Activity registrations are rejected with a 422, and any leftover APNs-destined send logs an error instead of delivering.
@@ -81,7 +81,7 @@ $EDITOR .env.docker   # APNs: fill in APPLE_KEY_PATH, APPLE_KEY_ID, APPLE_TEAM_I
                       # Both: REDDIT_* fallbacks, REGISTRATION_SECRET
 
 # 3. Bring it up
-make docker-up               # or: docker compose --profile bark up -d
+make docker-up               # or: docker compose --profile bark up -d --build
 make docker-logs             # follow output until health check passes
 ```
 

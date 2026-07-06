@@ -221,6 +221,13 @@ func TestSendBark_DefaultIconFallback(t *testing.T) {
 			payload:  payload.NewPayload().AlertTitle("New post").Custom("thumbnail", "https://a.thumbs.redditmedia.com/Lr4b.jpg"),
 			wantIcon: "https://a.thumbs.redditmedia.com/Lr4b.jpg",
 		},
+		{
+			// Reddit sends "self" (and "default"/"nsfw"/"spoiler"/"image")
+			// instead of a URL for posts without a thumbnail.
+			name:     "sentinel thumbnail gets the default icon",
+			payload:  payload.NewPayload().AlertTitle("New post").Custom("thumbnail", "self"),
+			wantIcon: "https://example.com/apollo.png",
+		},
 	}
 
 	for _, tc := range cases {

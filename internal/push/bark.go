@@ -78,7 +78,11 @@ func barkRequestFromPayload(p *payload.Payload) (*barkRequest, error) {
 		}
 	}
 
-	if thumb, ok := customs["thumbnail"].(string); ok {
+	// Reddit fills `thumbnail` with sentinels ("self", "default", "nsfw",
+	// "spoiler", "image") when a post has no real thumbnail; only a URL is
+	// usable as a Bark icon, and leaving Icon empty lets the default-icon
+	// fallback in sendBark kick in.
+	if thumb, ok := customs["thumbnail"].(string); ok && (strings.HasPrefix(thumb, "https://") || strings.HasPrefix(thumb, "http://")) {
 		req.Icon = thumb
 	}
 

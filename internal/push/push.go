@@ -68,9 +68,19 @@ func NewSender(logger *zap.Logger, key *token.Token, topic string) *Sender {
 		icon = defaultBarkIcon
 	}
 	s := &Sender{
-		logger:          logger,
-		topic:           topic,
-		httpClient:      &http.Client{Timeout: 10 * time.Second},
+		logger: logger,
+		topic:  topic,
+		httpClient: &http.Client{
+			Timeout: 10 * time.Second,
+			// The push URL is registrant-supplied, so a redirect could bounce
+			// the POST (and its notification content) to an address the
+			// registrant doesn't control the appearance of — an SSRF vector on
+			// open-registration deployments. bark-server never redirects, so
+			// surface the 3xx as a failed send instead of following it.
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 		barkDefaultIcon: icon,
 	}
 	if key != nil {

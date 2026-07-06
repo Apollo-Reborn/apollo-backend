@@ -9,6 +9,7 @@ import (
 	"github.com/sideshow/apns2/payload"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 
 	"github.com/christianselig/apollo-backend/internal/domain"
 )
@@ -198,6 +199,34 @@ func TestBarkRequestFromPayload_EmptyBodyFallsBackToTitle(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "Only a title", req.Body)
+}
+
+// The push URL is registrant-supplied, so following a redirect would let a
+// registration bounce the POST anywhere (SSRF); a 3xx must come back as a
+// failed send, not be chased.
+func TestSendBark_DoesNotFollowRedirects(t *testing.T) {
+	t.Parallel()
+
+	redirected := false
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirected = true
+		_, _ = w.Write([]byte(`{"code":200,"message":"success"}`))
+	}))
+	defer target.Close()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	}))
+	defer srv.Close()
+
+	s := NewSender(zap.NewNop(), nil, "")
+	d := domain.Device{Transport: domain.DeviceTransportBark, TransportEndpoint: srv.URL}
+
+	res, err := s.sendBark(t.Context(), d, payload.NewPayload().AlertTitle("hi"))
+	require.NoError(t, err)
+	assert.False(t, res.Sent)
+	assert.Equal(t, http.StatusFound, res.Status)
+	assert.False(t, redirected, "the redirect target must never be contacted")
 }
 
 // sendBark fills in the default icon only when the payload carried no post

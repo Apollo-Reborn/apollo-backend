@@ -45,7 +45,11 @@ func (a *api) upsertDeviceHandler(w http.ResponseWriter, r *http.Request) {
 	// present.
 	if t := r.Header.Get("X-Apollo-Transport"); t != "" {
 		d.Transport = t
-		d.TransportEndpoint = r.Header.Get("X-Apollo-Transport-Endpoint")
+		// Fall back to the body's endpoint when only the transport header
+		// made it through — never clobber a usable value with "".
+		if e := r.Header.Get("X-Apollo-Transport-Endpoint"); e != "" {
+			d.TransportEndpoint = e
+		}
 	}
 
 	// Older clients send no transport field — treat them as plain APNs.

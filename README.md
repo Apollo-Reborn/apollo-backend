@@ -17,13 +17,13 @@ This fork is meant to be run together with **[Apollo-Reborn/Apollo-Reborn](https
 Single-tenant by design: one deployment serves one sideloaded Apollo build (one bundle ID, one Apple Developer team), and can be shared with a small group of friends running the same build.
 
 > [!TIP]
-> **New to self-hosting this?** Start with the **[step-by-step Getting Started guide](GETTING_STARTED.md)** — it walks you all the way from installing Docker and creating an APNs key to a test push landing on your phone (and optionally exposing the backend to the internet). This README is the technical reference; that guide is the on-ramp.
+> **New to self-hosting this?** Start with a step-by-step Getting Started guide — there's one per delivery path: **[native APNs](GETTING_STARTED.md)** (paid Apple Developer account, full fidelity including Live Activities) or **[Bark](GETTING_STARTED_BARK.md)** (completely free, no Apple Developer account, works on free-Apple-ID sideloads). Each walks you all the way from installing Docker to a test notification landing on your phone. Want free hosting too? See **[running it on Oracle Cloud's Always Free tier](ORACLE_CLOUD.md)**. This README is the technical reference; those guides are the on-ramp.
 
 ## Before you start
 
 Three hard prerequisites — none of these are negotiable, and skipping any of them produces failure modes that look like backend bugs but aren't:
 
-1. **A paid Apple Developer account.** APNs delivery requires the `aps-environment` entitlement, which Apple only grants under a paid team ($99/yr). Free-account sideloads can register devices and exercise every endpoint, but the pushes never arrive.
+1. **A paid Apple Developer account — or Bark delivery.** APNs delivery requires the `aps-environment` entitlement, which Apple only grants under a paid team ($99/yr). Free-account sideloads can register devices and exercise every endpoint, but APNs pushes never arrive. As of the Bark transport (see [What changed from upstream](#what-changed-from-upstream)), free-account sideloads can instead receive notifications through the free [Bark](https://apps.apple.com/us/app/bark-custom-notifications/id1403753865) App Store app: the tweak registers the device with `transport: bark` and the backend POSTs each notification to the device's Bark push URL, with an `apollo://` deep link that opens Apollo when tapped. Prerequisites 2–3 below still apply to APNs devices only.
 2. **A custom bundle ID — *not* `com.christianselig.Apollo`.** Reddit's edge WAF has the original Apollo bundle ID on its blocklist; any request whose `User-Agent` contains that string gets a 403 HTML "blocked by network security" response from `oauth.reddit.com` and the token endpoint. Re-sign your sideloaded build under your own bundle ID (e.g. `com.you.Leto`) and use that everywhere — `APPLE_APNS_TOPIC`, the App ID's Push entitlement, the tweak's User Agent.
 3. **An explicit App ID with Push Notifications enabled** at developer.apple.com — not Sideloadly's wildcard. Push capability isn't enabled on wildcard provisioning profiles, so the entitlement is silently absent and Apple drops every notification.
 
@@ -37,6 +37,21 @@ The upstream backend was deeply tied to Christian's App Store deployment. This f
 - **APNs gateway configurable** via `APPLE_APNS_SANDBOX`. Apollo's release-signed binary always sent `sandbox=false` (it was App Store production); sideloaded builds signed under a dev cert need sandbox APNs, and pinning this per deployment avoids `BadDeviceToken` errors and the worker's aggressive auto-delete on receipt of one. The notifications worker now picks its APNs gateway from `device.Sandbox` per-device, rather than the now-vestigial `account.Development` flag.
 - **Reddit OAuth credentials are per-account**, stored on `accounts.reddit_client_id` / `reddit_client_secret` / `reddit_redirect_uri` / `reddit_user_agent`. Installed-app credentials (empty `client_secret`) are accepted. If the tweak doesn't manage to inject them on a given registration (it can't reach bodies attached to upload-tasks), the API falls back to `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` / `REDDIT_REDIRECT_URI` / `REDDIT_USER_AGENT` env vars on the API process.
 - **CamelCase registration payloads accepted.** Apollo's iOS client posts `accessToken` / `refreshToken`, not the snake_case shape upstream documented. The handler accepts both.
+- **Bark transport for free-account sideloads.** `POST /v1/device` accepts two new optional fields: `transport` (`apns`, the default, or `bark`) and `transport_endpoint` (the device's Bark push URL, e.g. `https://api.day.app/<device_key>` or a self-hosted [bark-server](https://github.com/Finb/bark-server)). The same values are also accepted as `X-Apollo-Transport` / `X-Apollo-Transport-Endpoint` headers, which win over the body — the tweak sends headers because Apollo posts `/v1/device` as an upload task whose body the request rewrite can't always reach. Bark devices carry a tweak-generated synthetic 64-hex token in place of an APNs token; every send site (`internal/push`) routes per-device, translating the APNs payload into a Bark JSON POST whose `url` field deep-links back into Apollo (`apollo://reddit.com/r/<sub>/comments/<post_id>` for anything with a post, `apollo://reborn/inbox` for private messages). Three things to know: the Bark push URL is a **bearer capability** — anyone with DB access can push to that phone; notification content transits the Bark relay (api.day.app or your bark-server) plus Apple's push infrastructure **in plaintext** — self-host bark-server if that matters to you; and the push URL is a registrant-supplied address the workers POST to, so on an open-registration deployment it's an **SSRF vector** toward anything the workers can reach (the sender refuses to follow redirects, but set `REGISTRATION_SECRET` before exposing the API to untrusted networks). Bark delivery failures are logged (`bark.notification.errors` in statsd) but never delete the device row, unlike APNs rejections. Live Activities remain APNs-only.
+
+  A self-hosted [bark-server](https://github.com/Finb/bark-server) ships in `docker-compose.yml` behind the opt-in `bark` profile:
+
+  ```bash
+  docker compose --profile bark up -d --build
+  ```
+
+  A Bark-only deployment needs no Apple credentials at all: leave every `APPLE_*` var empty and the services start with APNs disabled — Bark devices work normally, APNs device registrations and Live Activity registrations are rejected with a 422, and any leftover APNs-destined send logs an error instead of delivering.
+
+  It listens on port 8080 (`BARK_SERVER_PORT` to change) and stores device registrations in the `barkdata` volume. Point the Bark iOS app at it (add server → `http://<host>:8080` or your reverse-proxied HTTPS URL); the app registers itself and shows a device key, and the Bark Push URL for Apollo's settings is `<server>/<device_key>`. That URL must be reachable **from the worker containers** — use a LAN IP or public hostname, never `localhost`. Delivery to the phone still rides Apple's push infrastructure via Bark's own certificate baked into bark-server, so no Apple Developer account is involved. Self-hosting keeps notification content off api.day.app, at the cost of exposing one more port; the hosted api.day.app works fine too if you'd rather not.
+
+  Bark notifications carry Apollo's iconography instead of Bark's: pushes with a post thumbnail show the thumbnail, and everything else (PMs, comment replies) falls back to Apollo's app icon, hosted in the [Apollo-Reborn repo](https://github.com/Apollo-Reborn/Apollo-Reborn/tree/main/assets/bark-icons) (`BARK_DEFAULT_ICON` env var overrides the fallback URL). When the user has picked an alternate app icon in Apollo, the tweak pins that icon's PNG via an `?icon=` query parameter on the registered push URL — bark-server gives query parameters priority over the JSON body, so their chosen icon shows on every notification, thumbnails included.
+
+  Apollo's notification sounds can come along too, with one manual step. Native pushes always say `sound=traloop.wav` and Apollo's bundled notification service extension swaps in the sound picked in-app — that extension never runs for Bark deliveries, and the Bark app can only play its own built-ins or `.caf` files imported into it. The backend forwards the payload's sound name (`traloop`), and the tweak pins the in-app pick via `?sound=` on the push URL; to actually hear them, import the matching `.caf` from [Apollo-Reborn's assets/bark-sounds](https://github.com/Apollo-Reborn/Apollo-Reborn/tree/main/assets/bark-sounds) into the Bark app — Service tab → the "Alert Sound" card → "Click here to view all available sounds." → **Upload Sound** (files are named by Apollo's internal sound ids, e.g. `diabolicalDoorbell.caf`). Sounds that aren't imported fall back to the default iOS alert tone, so skipping this step breaks nothing.
 - **Registration endpoints gated** by the optional `REGISTRATION_SECRET` env var.
 - **StatsD is optional** — a `NoOpClient` is wired in when `STATSD_URL` is unset (formerly crashed at startup).
 - **Diagnostic stubs for Apollo's three legacy hosts**: `/api/req_v2`, `/api/announcement`, `/v1/receipt[/{apns}]`. Returns permissive responses so the tweak's host-rewrite doesn't strand the client on dead endpoints. The receipt stub hardcodes Pro + Ultra as owned.
@@ -44,28 +59,30 @@ The upstream backend was deeply tied to Christian's App Store deployment. This f
 - **Reddit edge WAF workarounds.** `Content-Type: application/x-www-form-urlencoded` is now set explicitly on the OAuth token POST (Go's `http.NewRequest` doesn't auto-set it), and `?raw_json=1` is scoped to `oauth.reddit.com/*` calls only (it triggers a 403 HTML block when sent to `www.reddit.com/api/v1/access_token`).
 - **Dockerized** — `Dockerfile` + `docker-compose.yml` replace the original Render-specific deployment.
 
-The result: the backend boots end-to-end with only Postgres, Redis, an APNs auth key, and a bundle ID. Everything else is opt-in.
+The result: the backend boots end-to-end with only Postgres, Redis, and either an APNs auth key + bundle ID or a Bark push URL per device. Everything else is opt-in.
 
 ## Quickstart with Docker
 
-Requires Docker + an APNs auth key (`.p8`) from a paid Apple Developer account.
+Requires Docker. An APNs auth key (`.p8`) from a paid Apple Developer account enables direct APNs delivery; without one, run in **Bark-only mode** (leave every `APPLE_*` var empty and use the `bark` profile — see the Bark transport section above).
 
 ```bash
 git clone https://github.com/Apollo-Reborn/apollo-backend
 cd apollo-backend
 
-# 1. Drop your APNs key
+# 1. Drop your APNs key (skip for Bark-only mode)
 mkdir -p secrets
 cp ~/Downloads/AuthKey_XXXXXXXXXX.p8 secrets/apple.p8
 
 # 2. Configure environment
 cp .env.docker.example .env.docker
-$EDITOR .env.docker   # fill in APPLE_KEY_ID, APPLE_TEAM_ID, APPLE_APNS_TOPIC,
-                      # APPLE_APNS_SANDBOX, REDDIT_* fallbacks, REGISTRATION_SECRET
+$EDITOR .env.docker   # APNs: fill in APPLE_KEY_PATH, APPLE_KEY_ID, APPLE_TEAM_ID,
+                      #   APPLE_APNS_TOPIC, APPLE_APNS_SANDBOX
+                      # Bark-only: leave all APPLE_* empty
+                      # Both: REDDIT_* fallbacks, REGISTRATION_SECRET
 
 # 3. Bring it up
-make docker-up
-make docker-logs      # follow output until health check passes
+make docker-up               # or: docker compose --profile bark up -d --build
+make docker-logs             # follow output until health check passes
 ```
 
 Verify the API is reachable:
@@ -84,16 +101,23 @@ You should now be able to point the tweak at `http://<your-host>:4000` (or your 
 | `DATABASE_CONNECTION_POOL_URL` | Postgres URL (via PgBouncer in transaction mode). **No query string** — `cmdutil.NewDatabasePool` appends `?pool_max_conns=…` and a second `?` makes pgx reject the URL. |
 | `REDIS_QUEUE_URL` | Redis backing rmq job queues. Configure `noeviction`. |
 | `REDIS_LOCKS_URL` | Redis backing the dedup locks (Lua script in `scheduler.go`). Can be the same instance as the queue Redis. |
+
+### Required for APNs delivery (all-or-nothing)
+
+Set **all four** to deliver over APNs, or leave **all four** empty to run in Bark-only mode (APNs disabled; APNs device registrations and Live Activities are rejected with a 422). Setting only some of them fails startup with an error naming the missing vars.
+
+| Var | Purpose |
+|---|---|
 | `APPLE_KEY_PATH` | Path to your APNs auth key `.p8` file. |
 | `APPLE_KEY_ID` | APNs key ID from developer.apple.com. |
 | `APPLE_TEAM_ID` | Your Apple Developer team ID. |
-| `APPLE_APNS_TOPIC` | Bundle ID of the sideloaded Apollo build (e.g. `com.you.Leto`). Used as `apns-topic` on every push. Crashes at startup if unset. **Must not be `com.christianselig.Apollo`** — see [Before you start](#before-you-start). |
+| `APPLE_APNS_TOPIC` | Bundle ID of the sideloaded Apollo build (e.g. `com.you.Leto`). Used as `apns-topic` on every push. **Must not be `com.christianselig.Apollo`** — see [Before you start](#before-you-start). |
 
 ## Optional environment variables
 
 | Var | Default | Effect |
 |---|---|---|
-| `APPLE_APNS_SANDBOX` | unset | Set to `true` to override Apollo's `sandbox=false` registrations and route pushes through `api.sandbox.push.apple.com`. Required for sideloaded builds signed under a dev cert. |
+| `APPLE_APNS_SANDBOX` | unset | Set to `true` to override Apollo's `sandbox=false` registrations and route pushes through `api.sandbox.push.apple.com`. Required for sideloaded builds signed under a dev cert. Ignored in Bark-only mode. |
 | `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET`, `REDDIT_REDIRECT_URI`, `REDDIT_USER_AGENT` | unset | Fallback OAuth credentials used when the tweak fails to inject them per-account at registration time. Single-tenant deployments can set these and skip per-account configuration entirely. |
 | `REGISTRATION_SECRET` | unset | If set, registration endpoints require `X-Registration-Token: <value>`. Off by default for local/private-network use. |
 | `STATSD_URL` | unset | If set, emits metrics to the given UDP endpoint. If unset, all metrics no-op. |

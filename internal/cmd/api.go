@@ -33,6 +33,15 @@ func APICmd(ctx context.Context) *cobra.Command {
 			}
 			defer statsd.Close()
 
+			apns, apnsTopic, err := cmdutil.LoadAPNS()
+			if err != nil {
+				logger.Error("apns startup failed", zap.Error(err))
+				return err
+			}
+			if apns == nil {
+				logger.Info("APNs disabled (no APPLE_* env vars set); running in Bark-only mode")
+			}
+
 			db, err := cmdutil.NewDatabasePool(ctx, 16)
 			if err != nil {
 				return err
@@ -44,12 +53,6 @@ func APICmd(ctx context.Context) *cobra.Command {
 				return err
 			}
 			defer redis.Close()
-
-			apns, apnsTopic, err := cmdutil.LoadAPNS()
-			if err != nil {
-				logger.Error("apns startup failed", zap.Error(err))
-				return err
-			}
 
 			api := api.NewAPI(ctx, logger, statsd, redis, db, apns, apnsTopic)
 			srv := api.Server(port)

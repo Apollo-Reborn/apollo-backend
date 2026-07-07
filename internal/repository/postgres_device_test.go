@@ -66,6 +66,37 @@ func TestPostgresDevice_GetByID(t *testing.T) {
 	}
 }
 
+func TestPostgresDevice_BarkTransportRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	repo := NewTestPostgresDevice(t)
+
+	dev := &domain.Device{
+		APNSToken:         testToken,
+		Transport:         domain.DeviceTransportBark,
+		TransportEndpoint: "https://api.day.app/fakedevicekey",
+	}
+	require.NoError(t, repo.CreateOrUpdate(ctx, dev))
+
+	got, err := repo.GetByAPNSToken(ctx, testToken)
+	require.NoError(t, err)
+	assert.Equal(t, domain.DeviceTransportBark, got.Transport)
+	assert.Equal(t, "https://api.day.app/fakedevicekey", got.TransportEndpoint)
+	assert.True(t, got.IsBark())
+
+	// Re-registering the same token as plain APNs flips the row back — this is
+	// the paid-re-sign / bark-disabled path.
+	dev.Transport = domain.DeviceTransportAPNS
+	dev.TransportEndpoint = ""
+	require.NoError(t, repo.CreateOrUpdate(ctx, dev))
+
+	got, err = repo.GetByAPNSToken(ctx, testToken)
+	require.NoError(t, err)
+	assert.Equal(t, domain.DeviceTransportAPNS, got.Transport)
+	assert.Equal(t, "", got.TransportEndpoint)
+}
+
 func TestPostgresDevice_Create(t *testing.T) {
 	t.Parallel()
 

@@ -18,6 +18,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/christianselig/apollo-backend/internal/domain"
+	"github.com/christianselig/apollo-backend/internal/push"
 	"github.com/christianselig/apollo-backend/internal/reddit"
 	"github.com/christianselig/apollo-backend/internal/repository"
 )
@@ -29,6 +30,7 @@ type api struct {
 	apns       *token.Token
 	apnsTopic  string
 	httpClient *http.Client
+	sender     *push.Sender
 
 	accountRepo      domain.AccountRepository
 	deviceRepo       domain.DeviceRepository
@@ -64,6 +66,7 @@ func NewAPI(ctx context.Context, logger *zap.Logger, statsd statsd.ClientInterfa
 		apns:       apns,
 		apnsTopic:  apnsTopic,
 		httpClient: client,
+		sender:     push.NewSender(logger, apns, apnsTopic),
 
 		accountRepo:      accountRepo,
 		deviceRepo:       deviceRepo,

@@ -53,6 +53,19 @@ func WorkerCmd(ctx context.Context) *cobra.Command {
 
 			tracer := otel.Tracer(tag)
 
+			// Load APNs config before any queue/redis client exists: a config
+			// error here must not leave an rmq heartbeat goroutine running
+			// against a closed redis client (spurious "heartbeat error" spam
+			// during the crash-loop unwind).
+			apns, apnsTopic, err := cmdutil.LoadAPNS()
+			if err != nil {
+				logger.Error("apns startup failed", zap.Error(err))
+				return err
+			}
+			if apns == nil {
+				logger.Info("APNs disabled (no APPLE_* env vars set); running in Bark-only mode")
+			}
+
 			db, err := cmdutil.NewDatabasePool(ctx, consumers/16)
 			if err != nil {
 				return err
@@ -79,12 +92,6 @@ func WorkerCmd(ctx context.Context) *cobra.Command {
 			workerFn, ok := queues[queueID]
 			if !ok {
 				return fmt.Errorf("invalid queue: %s", queueID)
-			}
-
-			apns, apnsTopic, err := cmdutil.LoadAPNS()
-			if err != nil {
-				logger.Error("apns startup failed", zap.Error(err))
-				return err
 			}
 
 			worker := workerFn(ctx, logger, tracer, statsd, db, redis, queue, consumers, apns, apnsTopic)

@@ -60,6 +60,14 @@ func (a *api) createLiveActivityHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Live Activity pushes go straight to APNs (no Bark path exists), so a
+	// Bark-only backend rejects the registration up front — this is what
+	// keeps live_activities rows from piling up in that mode.
+	if a.apns == nil {
+		a.errorResponse(w, r, 422, fmt.Errorf("Live Activities require APNs, which this backend has not configured (Bark-only mode)"))
+		return
+	}
+
 	// Apollo stores accounts by bare Reddit ID (me.ID); tolerate a t2_
 	// fullname in case the client sends one.
 	rid := strings.TrimPrefix(req.RedditAccountID, "t2_")

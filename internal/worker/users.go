@@ -12,13 +12,13 @@ import (
 	"github.com/adjust/rmq/v5"
 	"github.com/go-redis/redis/v8"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/sideshow/apns2"
 	"github.com/sideshow/apns2/payload"
 	"github.com/sideshow/apns2/token"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 
 	"github.com/christianselig/apollo-backend/internal/domain"
+	"github.com/christianselig/apollo-backend/internal/push"
 	"github.com/christianselig/apollo-backend/internal/reddit"
 	"github.com/christianselig/apollo-backend/internal/repository"
 )
@@ -26,14 +26,14 @@ import (
 type usersWorker struct {
 	context.Context
 
-	logger *zap.Logger
-	tracer trace.Tracer
-	statsd statsd.ClientInterface
-	db     *pgxpool.Pool
-	redis  *redis.Client
-	queue  rmq.Connection
-	reddit *reddit.Client
-	apns   *token.Token
+	logger    *zap.Logger
+	tracer    trace.Tracer
+	statsd    statsd.ClientInterface
+	db        *pgxpool.Pool
+	redis     *redis.Client
+	queue     rmq.Connection
+	reddit    *reddit.Client
+	apns      *token.Token
 	apnsTopic string
 
 	consumers int
@@ -110,16 +110,14 @@ type usersConsumer struct {
 	*usersWorker
 	tag int
 
-	apnsSandbox    *apns2.Client
-	apnsProduction *apns2.Client
+	sender *push.Sender
 }
 
 func NewUsersConsumer(uw *usersWorker, tag int) *usersConsumer {
 	return &usersConsumer{
 		uw,
 		tag,
-		apns2.NewTokenClient(uw.apns),
-		apns2.NewTokenClient(uw.apns).Production(),
+		push.NewSender(uw.logger, uw.apns, uw.apnsTopic),
 	}
 }
 
@@ -246,9 +244,6 @@ func (uc *usersConsumer) Consume(delivery rmq.Delivery) {
 
 		payload := payloadFromUserPost(post)
 
-		notification := &apns2.Notification{}
-		notification.Topic = uc.apnsTopic
-
 		for _, watcher := range notifs {
 			if err := uc.watcherRepo.IncrementHits(ctx, watcher.ID); err != nil {
 				uc.logger.Error("failed to increment watcher hits",
@@ -265,28 +260,22 @@ func (uc *usersConsumer) Consume(delivery rmq.Delivery) {
 			title := fmt.Sprintf(userNotificationTitleFormat, watcher.Label)
 			payload.AlertTitle(title)
 
-			notification.Payload = payload
-			notification.DeviceToken = device.APNSToken
-
-			client := uc.apnsProduction
-			if device.Sandbox {
-				client = uc.apnsSandbox
-			}
-
-			res, err := client.Push(notification)
-			if err != nil || !res.Sent() {
-				_ = uc.statsd.Incr("apns.notification.errors", []string{}, 1)
+			// Watcher sends never unregistered devices on failure, so
+			// res.ShouldUnregister is deliberately ignored here.
+			res, err := uc.sender.Send(ctx, device, payload)
+			if err != nil || !res.Sent {
+				_ = uc.statsd.Incr(push.ErrorsMetric(device), []string{}, 1)
 				uc.logger.Error("failed to send notification",
 					zap.Error(err),
 					zap.Int64("user#id", id),
 					zap.String("user#name", user.NormalizedName()),
 					zap.String("post#id", post.ID),
 					zap.String("apns", watcher.Device.APNSToken),
-					zap.Int("response#status", res.StatusCode),
+					zap.Int("response#status", res.Status),
 					zap.String("response#reason", res.Reason),
 				)
 			} else {
-				_ = uc.statsd.Incr("apns.notification.sent", []string{}, 1)
+				_ = uc.statsd.Incr(push.SentMetric(device), []string{}, 1)
 				uc.logger.Info("sent notification",
 					zap.Int64("user#id", id),
 					zap.String("user#name", user.NormalizedName()),

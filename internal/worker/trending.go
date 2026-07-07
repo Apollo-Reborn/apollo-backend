@@ -13,13 +13,13 @@ import (
 	"github.com/adjust/rmq/v5"
 	"github.com/go-redis/redis/v8"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/sideshow/apns2"
 	"github.com/sideshow/apns2/payload"
 	"github.com/sideshow/apns2/token"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 
 	"github.com/christianselig/apollo-backend/internal/domain"
+	"github.com/christianselig/apollo-backend/internal/push"
 	"github.com/christianselig/apollo-backend/internal/reddit"
 	"github.com/christianselig/apollo-backend/internal/repository"
 )
@@ -27,13 +27,13 @@ import (
 type trendingWorker struct {
 	context.Context
 
-	logger *zap.Logger
-	tracer trace.Tracer
-	statsd statsd.ClientInterface
-	redis  *redis.Client
-	queue  rmq.Connection
-	reddit *reddit.Client
-	apns   *token.Token
+	logger    *zap.Logger
+	tracer    trace.Tracer
+	statsd    statsd.ClientInterface
+	redis     *redis.Client
+	queue     rmq.Connection
+	reddit    *reddit.Client
+	apns      *token.Token
 	apnsTopic string
 
 	consumers int
@@ -109,16 +109,14 @@ type trendingConsumer struct {
 	*trendingWorker
 	tag int
 
-	apnsSandbox    *apns2.Client
-	apnsProduction *apns2.Client
+	sender *push.Sender
 }
 
 func NewTrendingConsumer(tw *trendingWorker, tag int) *trendingConsumer {
 	return &trendingConsumer{
 		tw,
 		tag,
-		apns2.NewTokenClient(tw.apns),
-		apns2.NewTokenClient(tw.apns).Production(),
+		push.NewSender(tw.logger, tw.apns, tw.apnsTopic),
 	}
 }
 
@@ -235,9 +233,7 @@ func (tc *trendingConsumer) Consume(delivery rmq.Delivery) {
 			break
 		}
 
-		notification := &apns2.Notification{}
-		notification.Topic = tc.apnsTopic
-		notification.Payload = payloadFromTrendingPost(post)
+		p := payloadFromTrendingPost(post)
 
 		for _, watcher := range watchers {
 			if watcher.CreatedAt.After(post.CreatedAt) {
@@ -269,16 +265,11 @@ func (tc *trendingConsumer) Consume(delivery rmq.Delivery) {
 				return
 			}
 
-			notification.DeviceToken = watcher.Device.APNSToken
-
-			client := tc.apnsProduction
-			if watcher.Device.Sandbox {
-				client = tc.apnsSandbox
-			}
-
-			res, err := client.Push(notification)
+			// Watcher sends never unregistered devices on failure, so
+			// res.ShouldUnregister is deliberately ignored here.
+			res, err := tc.sender.Send(ctx, watcher.Device, p)
 			if err != nil {
-				_ = tc.statsd.Incr("apns.notification.errors", []string{}, 1)
+				_ = tc.statsd.Incr(push.ErrorsMetric(watcher.Device), []string{}, 1)
 				tc.logger.Error("failed to send notification",
 					zap.Error(err),
 					zap.Int64("subreddit#id", id),
@@ -287,19 +278,19 @@ func (tc *trendingConsumer) Consume(delivery rmq.Delivery) {
 					zap.String("apns", watcher.Device.APNSToken),
 					zap.Int64("median_score", medianScore),
 				)
-			} else if !res.Sent() {
-				_ = tc.statsd.Incr("apns.notification.errors", []string{}, 1)
+			} else if !res.Sent {
+				_ = tc.statsd.Incr(push.ErrorsMetric(watcher.Device), []string{}, 1)
 				tc.logger.Error("notification not sent",
 					zap.Int64("subreddit#id", id),
 					zap.String("subreddit#name", subreddit.NormalizedName()),
 					zap.String("post#id", post.ID),
 					zap.String("apns", watcher.Device.APNSToken),
 					zap.Int64("median_score", medianScore),
-					zap.Int("response#status", res.StatusCode),
+					zap.Int("response#status", res.Status),
 					zap.String("response#reason", res.Reason),
 				)
 			} else {
-				_ = tc.statsd.Incr("apns.notification.sent", []string{}, 1)
+				_ = tc.statsd.Incr(push.SentMetric(watcher.Device), []string{}, 1)
 				tc.logger.Info("sent notification",
 					zap.Int64("subreddit#id", id),
 					zap.String("subreddit#name", subreddit.NormalizedName()),

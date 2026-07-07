@@ -6,7 +6,6 @@ import (
 	"net/http"
 
 	"github.com/gorilla/mux"
-	"github.com/sideshow/apns2"
 	"github.com/sideshow/apns2/payload"
 	"go.uber.org/zap"
 )
@@ -45,19 +44,14 @@ func generateNotificationTester(a *api, fun notificationGenerator) func(w http.R
 
 		fun(p)
 
-		notification := &apns2.Notification{}
-		notification.Topic = a.apnsTopic
-		notification.DeviceToken = d.APNSToken
-		notification.Payload = p
-
-		client := apns2.NewTokenClient(a.apns)
-		if !d.Sandbox {
-			client = client.Production()
-		}
-
-		if _, err := client.Push(notification); err != nil {
+		res, err := a.sender.Send(ctx, d, p)
+		if err != nil {
 			a.logger.Info("failed to send test notification", zap.Error(err))
 			a.errorResponse(w, r, 500, err)
+			return
+		}
+		if !res.Sent {
+			a.errorResponse(w, r, 422, fmt.Errorf("errror sending notification: %d: %s", res.Status, res.Reason))
 			return
 		}
 		w.WriteHeader(http.StatusOK)

@@ -10,7 +10,6 @@ import (
 	"github.com/adjust/rmq/v5"
 	"github.com/go-redis/redis/v8"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/sideshow/apns2"
 	"github.com/sideshow/apns2/payload"
 	"github.com/sideshow/apns2/token"
 	"go.opentelemetry.io/otel/attribute"
@@ -19,6 +18,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/christianselig/apollo-backend/internal/domain"
+	"github.com/christianselig/apollo-backend/internal/push"
 	"github.com/christianselig/apollo-backend/internal/reddit"
 	"github.com/christianselig/apollo-backend/internal/repository"
 )
@@ -37,14 +37,14 @@ var notificationTags = []string{"queue:notifications"}
 type notificationsWorker struct {
 	context.Context
 
-	logger *zap.Logger
-	tracer trace.Tracer
-	statsd statsd.ClientInterface
-	db     *pgxpool.Pool
-	redis  *redis.Client
-	queue  rmq.Connection
-	reddit *reddit.Client
-	apns   *token.Token
+	logger    *zap.Logger
+	tracer    trace.Tracer
+	statsd    statsd.ClientInterface
+	db        *pgxpool.Pool
+	redis     *redis.Client
+	queue     rmq.Connection
+	reddit    *reddit.Client
+	apns      *token.Token
 	apnsTopic string
 
 	consumers int
@@ -111,17 +111,15 @@ func (nw *notificationsWorker) Stop() {
 
 type notificationsConsumer struct {
 	*notificationsWorker
-	tag   int
-	papns *apns2.Client
-	dapns *apns2.Client
+	tag    int
+	sender *push.Sender
 }
 
 func NewNotificationsConsumer(nw *notificationsWorker, tag int) *notificationsConsumer {
 	return &notificationsConsumer{
 		nw,
 		tag,
-		apns2.NewTokenClient(nw.apns).Production(),
-		apns2.NewTokenClient(nw.apns).Development(),
+		push.NewSender(nw.logger, nw.apns, nw.apnsTopic),
 	}
 }
 
@@ -288,46 +286,38 @@ func (nc *notificationsConsumer) Consume(delivery rmq.Delivery) {
 		latency := now.Sub(msg.CreatedAt)
 		_ = nc.statsd.Histogram("apollo.queue.delay", float64(latency.Milliseconds()), []string{}, 0.1)
 
-		notification := &apns2.Notification{}
-		notification.Topic = nc.apnsTopic
-		notification.Payload = payloadFromMessage(account, msg, msgs.Count)
+		p := payloadFromMessage(account, msg, msgs.Count)
 
 		for _, device := range devices {
-			// Pick gateway per-device. The original Apollo binary always
-			// used production APNs, so this used to key off account.Development.
-			// Self-hosted sideloaded builds get sandbox tokens (paid dev cert);
-			// device.Sandbox is set at registration time (and overridable via
-			// APPLE_APNS_SANDBOX on the api).
-			client := nc.papns
-			if device.Sandbox {
-				client = nc.dapns
-			}
-
-			notification.DeviceToken = device.APNSToken
-
-			res, err := client.PushWithContext(ctx, notification)
+			// The sender routes per-device: APNs (prod/sandbox gateway picked
+			// on device.Sandbox, overridable via APPLE_APNS_SANDBOX on the
+			// api) or a Bark HTTP push for free-sideload devices.
+			res, err := nc.sender.Send(ctx, device, p)
 			if err != nil {
-				_ = nc.statsd.Incr("apns.notification.errors", []string{}, 1)
+				_ = nc.statsd.Incr(push.ErrorsMetric(device), []string{}, 1)
 				logger.Error("failed to send notification",
 					zap.Error(err),
 					zap.String("device#token", device.APNSToken),
 				)
-
-				// Delete device as notifications might have been disabled here
-				_ = nc.deviceRepo.Delete(ctx, device.APNSToken)
-			} else if !res.Sent() {
-				_ = nc.statsd.Incr("apns.notification.errors", []string{}, 1)
+			} else if !res.Sent {
+				_ = nc.statsd.Incr(push.ErrorsMetric(device), []string{}, 1)
 				logger.Error("notification not sent",
 					zap.String("device#token", device.APNSToken),
-					zap.Int("response#status", res.StatusCode),
+					zap.Int("response#status", res.Status),
 					zap.String("response#reason", res.Reason),
 				)
-
-				// Delete device as notifications might have been disabled here
-				_ = nc.deviceRepo.Delete(ctx, device.APNSToken)
 			} else {
-				_ = nc.statsd.Incr("apns.notification.sent", []string{}, 1)
+				_ = nc.statsd.Incr(push.SentMetric(device), []string{}, 1)
 				logger.Info("sent notification", zap.String("device#token", device.APNSToken))
+			}
+
+			// An APNs rejection means the device is gone or notifications
+			// were disabled — clean up its registration like we always have.
+			// Bark failures never set ShouldUnregister: a bad key or an
+			// unreachable bark-server is transient and must not destroy the
+			// device row and its account/watcher graph.
+			if res.ShouldUnregister {
+				_ = nc.deviceRepo.Delete(ctx, device.APNSToken)
 			}
 		}
 	}

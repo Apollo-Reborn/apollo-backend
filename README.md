@@ -17,7 +17,7 @@ This fork is meant to be run together with **[Apollo-Reborn/Apollo-Reborn](https
 Single-tenant by design: one deployment serves one sideloaded Apollo build (one bundle ID, one Apple Developer team), and can be shared with a small group of friends running the same build.
 
 > [!TIP]
-> **New to self-hosting this?** Start with the **[step-by-step Getting Started guide](GETTING_STARTED.md)** — it walks you all the way from installing Docker and creating an APNs key to a test push landing on your phone (and optionally exposing the backend to the internet). This README is the technical reference; that guide is the on-ramp.
+> **New to self-hosting this?** Start with a step-by-step Getting Started guide — there's one per delivery path: **[native APNs](GETTING_STARTED.md)** (paid Apple Developer account, full fidelity including Live Activities) or **[Bark](GETTING_STARTED_BARK.md)** (completely free, no Apple Developer account, works on free-Apple-ID sideloads). Each walks you all the way from installing Docker to a test notification landing on your phone. Want free hosting too? See **[running it on Oracle Cloud's Always Free tier](ORACLE_CLOUD.md)**. This README is the technical reference; those guides are the on-ramp.
 
 ## Before you start
 

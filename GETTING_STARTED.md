@@ -1,15 +1,28 @@
-# Getting Started
+# Getting Started — native push (APNs)
 
 A complete, beginner-friendly walkthrough that takes you from **nothing installed** to **a test
 push landing on your iPhone** — and then, optionally, to a setup that works anywhere you go and
 keeps running for the long haul.
+
+> **Which guide do I want?** Notifications can be delivered two ways, and each has its own
+> start-to-finish guide — pick one and follow it top to bottom:
+>
+> - **This guide — native push (APNs).** Real iOS push notifications, delivered directly by Apple.
+>   Requires a **paid Apple Developer account** ($99/year) and an explicit App ID with the push
+>   capability. This is the full-fidelity path — it's the only one that supports Live Activities.
+> - **[The Bark guide](GETTING_STARTED_BARK.md) — completely free.** Delivery through the free
+>   [Bark](https://apps.apple.com/us/app/bark-custom-notifications/id1403753865) App Store app
+>   instead of APNs. No Apple Developer account, and it's the *only* path that works on
+>   free-Apple-ID sideloads (which can never receive APNs pushes). Trade-offs: no Live Activities,
+>   and notification content transits the Bark relay.
 
 This guide assumes no prior experience with Docker or the Apple Developer portal. Every command is
 copy-pasteable. If you already know Docker, the [Quickstart in the README](README.md#quickstart-with-docker)
 is the fast path; this is the long, hand-holding version.
 
 > **Time & cost:** plan for **30–60 minutes**, plus a one-time **$99/year** for the Apple Developer
-> Program (there is no way around this — see [prerequisites](#0-what-youre-building--what-youll-need)).
+> Program (required for this guide's native-push path — the [Bark guide](GETTING_STARTED_BARK.md)
+> is the free alternative).
 
 ## Table of contents
 
@@ -52,15 +65,12 @@ yourself (and optionally a few friends on the same build) — it's **single-tena
 These five things are **required**. Skipping any of them produces failures that look like backend
 bugs but aren't — so confirm each one before you start.
 
-1. **A paid Apple Developer account ($99/year) — OR Bark.** Apple only grants the push-notification
+1. **A paid Apple Developer account ($99/year).** Apple only grants the push-notification
    entitlement (`aps-environment`) to paid teams. With a *free* account you can register devices and
    everything looks fine, but **the pushes never arrive** over APNs. Sign up at
-   [developer.apple.com/programs](https://developer.apple.com/programs/) — or skip the paid account
-   entirely by delivering through the free [Bark](https://apps.apple.com/us/app/bark-custom-notifications/id1403753865)
-   app instead: leave every `APPLE_*` value in `.env.docker` empty (the backend then runs in
-   **Bark-only mode**), skip [Step 3](#3-set-up-apple-app-id-apns-key-team-id), and follow the
-   bark-server notes in [Step 5](#5-start-the-backend). Bark-only trade-offs: Live Activities don't
-   work (they're APNs-only), and notification content transits the Bark relay.
+   [developer.apple.com/programs](https://developer.apple.com/programs/). **Don't want to pay?**
+   Stop here and follow the **[Bark guide](GETTING_STARTED_BARK.md)** instead — it delivers
+   notifications for free through the Bark app and skips every Apple-portal step in this guide.
 
 2. **Your own custom bundle ID — never `com.christianselig.Apollo`.** Reddit's edge firewall blocks
    the original Apollo bundle ID: any request whose User-Agent contains that string gets a `403`
@@ -171,9 +181,6 @@ rebuilds automatically.
 
 ## 3. Set up Apple: App ID, APNs key, Team ID
 
-> **Bark-only mode?** Skip this whole step. Leave all four `APPLE_*` values empty in
-> [Step 4b](#4b-create-your-environment-file) and the backend starts with APNs disabled.
-
 This is the part the rest of the documentation assumes you already know. Here it is in full. You'll
 do all of this at **[developer.apple.com/account](https://developer.apple.com/account)**.
 
@@ -238,8 +245,6 @@ Copy it — this is your `APPLE_TEAM_ID`.
 
 ### 4a. Drop the APNs key into the project
 
-*(Bark-only mode: skip this — there is no key.)*
-
 From the `apollo-backend` directory:
 
 ```bash
@@ -259,9 +264,9 @@ cp .env.docker.example .env.docker
 
 Now open `.env.docker` in any text editor and fill in these values.
 
-The four `APPLE_*` values are **all-or-nothing**: set all four for APNs delivery, or leave all four
-empty for **Bark-only mode** (a partial set fails startup with an error naming what's missing).
-Bark-only users leave this whole block blank and skip to `REGISTRATION_SECRET`:
+Set **all four** `APPLE_*` values — they're all-or-nothing, and a partial set fails startup with an
+error naming what's missing. (Leaving all four empty is the [Bark guide](GETTING_STARTED_BARK.md)'s
+"Bark-only mode", not this path.)
 
 | Variable | Set it to |
 |---|---|
@@ -269,7 +274,7 @@ Bark-only users leave this whole block blank and skip to `REGISTRATION_SECRET`:
 | `APPLE_KEY_ID` | Your Key ID from [3c](#3c-create-an-apns-auth-key-the-p8-file) (e.g. `ABC123XYZ9`). |
 | `APPLE_TEAM_ID` | Your Team ID from [3d](#3d-find-your-team-id) (e.g. `A1B2C3D4E5`). |
 | `APPLE_APNS_TOPIC` | **Your bundle ID** (e.g. `com.yourname.Apollo`). ⚠️ Never `com.christianselig.Apollo` — Reddit blocks it, so every Reddit call gets a 403. |
-| `APPLE_APNS_SANDBOX` | `true` — sideloaded builds signed with a development certificate need the **sandbox** APNs gateway. Leaving this off is the most common cause of `BadDeviceToken`. (Ignored in Bark-only mode.) |
+| `APPLE_APNS_SANDBOX` | `true` — sideloaded builds signed with a development certificate need the **sandbox** APNs gateway. Leaving this off is the most common cause of `BadDeviceToken`. |
 | `REGISTRATION_SECRET` | A long random string of your choosing (e.g. the output of `openssl rand -hex 24`). This stops strangers from registering against your backend. Optional on a private LAN, **strongly recommended before you expose anything to the internet** ([Step 8](#8-optional-open-it-up-to-the-internet)). |
 
 **About the Reddit credentials (`REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET`, `REDDIT_REDIRECT_URI`,
@@ -314,7 +319,7 @@ This starts everything the backend needs, each in its own container:
 - **api** — the HTTP server (port **4000**) the app talks to
 - **scheduler** — decides what to check and when
 - **worker-notifications / -subreddits / -trending / -users / -stuck-notifications** — do the work
-- **bark-server** *(optional, off by default)* — a self-hosted [Bark](https://github.com/Finb/bark-server) relay (port **8080**) for delivering notifications to builds signed with a **free** Apple ID, which can never receive APNs. Start it with `docker compose --profile bark up -d --build`. Setup: install the free [Bark app](https://apps.apple.com/us/app/bark-custom-notifications/id1403753865), add your server in it (`http://<host>:8080` — use a LAN IP or public hostname the phone *and* the backend containers can reach, not `localhost`), then copy the push URL it shows (`<server>/<device key>`) into Apollo's **Settings > General > Custom API > Bark Push URL** and flip on **Bark Delivery**. You can also skip self-hosting and use Bark's default `https://api.day.app/<device key>` — but then notification content transits Bark's hosted relay in plaintext. Notifications show Apollo's icon (or the post thumbnail, or the alternate app icon selected in Apollo) rather than Bark's — see `BARK_DEFAULT_ICON` in the README if you want to override the fallback. Apollo's notification sounds work too if you import the matching `.caf` from [Apollo-Reborn's assets/bark-sounds](https://github.com/Apollo-Reborn/Apollo-Reborn/tree/main/assets/bark-sounds) into the Bark app (Service tab → Alert Sound → view all sounds → Upload Sound); otherwise the default tone plays.
+- **bark-server** *(optional, off by default)* — a self-hosted [Bark](https://github.com/Finb/bark-server) relay for the free, non-APNs delivery path. Not needed for this guide; it's covered start-to-finish in the [Bark guide](GETTING_STARTED_BARK.md). (Paid-account users can use Bark too — the tweak can flip a device between APNs and Bark delivery in place.)
 
 ### Confirm it's healthy
 
@@ -335,8 +340,9 @@ You should get:
 > `APPLE_TEAM_ID` / `APPLE_APNS_TOPIC` are set — or the `.p8` file isn't where `APPLE_KEY_PATH`
 > says — the process **logs the exact problem and exits**, then Docker restarts it in a loop. Run
 > `make docker-logs` and read the error; it names the missing variables. Fix `.env.docker` (or the
-> key path), then `make docker-up` again. Leaving all four empty is *not* an error — that's
-> Bark-only mode, and the logs say so: `APNs disabled (no APPLE_* env vars set)`.
+> key path), then `make docker-up` again. (Leaving all four empty is *not* an error — that's the
+> [Bark guide](GETTING_STARTED_BARK.md)'s Bark-only mode, and the logs say so: `APNs disabled (no
+> APPLE_* env vars set)`.)
 
 ---
 
@@ -488,7 +494,8 @@ Tunnel (8c) is the easiest and safest because it needs **no router changes**.
 ### 8a. VPS + Caddy reverse proxy (most reliable)
 
 A small cloud server with a public IP. Roughly $4–6/month from providers like Hetzner, DigitalOcean,
-Vultr, or Linode.
+Vultr, or Linode — or **$0/month** on Oracle Cloud's Always Free tier, which has its own
+walkthrough (including its unusual firewall setup): **[ORACLE_CLOUD.md](ORACLE_CLOUD.md)**.
 
 1. Create a small Linux VPS (1 GB RAM is plenty to start).
 2. On it, install Docker ([Step 1, Linux](#1-install-docker)) and bring up the stack
@@ -616,9 +623,9 @@ the order you'd hit them:
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `curl .../v1/health` refuses the connection | Containers still starting, or one crashed | Wait a few seconds; then `make docker-logs` to see what failed |
-| `api` / worker containers restart-loop | *Partial* `APPLE_*` config (some set, some missing), or the `.p8` isn't at `secrets/apple.p8` | Read the exact error in `make docker-logs`; set all four `APPLE_*` vars for APNs or empty all four for Bark-only mode, then `make docker-up` |
+| `api` / worker containers restart-loop | *Partial* `APPLE_*` config (some set, some missing), or the `.p8` isn't at `secrets/apple.p8` | Read the exact error in `make docker-logs`; set all four `APPLE_*` vars (all-empty is the [Bark guide](GETTING_STARTED_BARK.md)'s mode, not this one), then `make docker-up` |
 | App's **Test Connection** fails, but `curl localhost:4000/v1/health` works on the server | Phone can't reach the server: wrong IP/port, different network, or firewall | Use the server's LAN IP (not `localhost`); confirm phone and server are on the same Wi-Fi (or finish [Step 8](#8-optional-open-it-up-to-the-internet)) |
-| Device registers, but **no push ever arrives** | Free Apple account (no push entitlement), or wildcard profile instead of an explicit App ID | Use a paid account and the explicit App ID with Push enabled ([Step 3](#3-set-up-apple-app-id-apns-key-team-id)), or switch to Bark delivery (free account, [Step 5](#5-start-the-backend)) |
+| Device registers, but **no push ever arrives** | Free Apple account (no push entitlement), or wildcard profile instead of an explicit App ID | Use a paid account and the explicit App ID with Push enabled ([Step 3](#3-set-up-apple-app-id-apns-key-team-id)), or switch to the free [Bark path](GETTING_STARTED_BARK.md) |
 | `BadDeviceToken` in the logs | APNs sandbox/production mismatch | Set `APPLE_APNS_SANDBOX=true` and restart |
 | `403 "blocked by network security"` HTML on Reddit calls | Bundle ID / User-Agent still contains `com.christianselig.Apollo` | Re-sign under your own bundle ID; fix `APPLE_APNS_TOPIC` and the tweak's User Agent |
 | `oauth revoked` right after a *successful* token refresh | User Agent missing the `(by /u/yourname)` suffix | Use a UA like `ios:com.yourname.Apollo:v1.0 (by /u/you)` |

@@ -155,13 +155,33 @@ func (r *accountRegistrationRequest) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// fillRedditCredsFromHeader backfills any unset Reddit OAuth fields from the
+// X-Apollo-Reddit-* request headers. The tweak sets these (its global-default
+// credentials) on every account upsert because its NSData-based body
+// augmentation can't reach bodies attached to upload/data tasks via
+// `fromData:` — the same reason /v1/device's transport rides in headers.
+// Precedence: body fields (per-account overrides) win over headers, headers
+// win over the env fallback below.
+func (r *accountRegistrationRequest) fillRedditCredsFromHeader(h http.Header) {
+	if r.ClientID == "" {
+		r.ClientID = h.Get("X-Apollo-Reddit-Client-Id")
+	}
+	if r.ClientSecret == "" {
+		r.ClientSecret = h.Get("X-Apollo-Reddit-Client-Secret")
+	}
+	if r.RedirectURI == "" {
+		r.RedirectURI = h.Get("X-Apollo-Reddit-Redirect-Uri")
+	}
+	if r.UserAgent == "" {
+		r.UserAgent = h.Get("X-Apollo-Reddit-User-Agent")
+	}
+}
+
 // fillRedditCredsFromEnv backfills any unset Reddit OAuth fields with the
 // process-level REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET / REDDIT_REDIRECT_URI
-// / REDDIT_USER_AGENT env vars. The tweak normally injects these into the
-// request body per the per-account model, but its NSData-based augmentation
-// can't reach bodies attached to upload/data tasks via `fromData:`; this
-// fallback covers that case (and lets simple deployments skip per-account
-// configuration entirely).
+// / REDDIT_USER_AGENT env vars. Last-resort fallback after body fields and
+// the X-Apollo-Reddit-* headers (see fillRedditCredsFromHeader); also lets
+// simple single-key deployments skip per-account configuration entirely.
 func (r *accountRegistrationRequest) fillRedditCredsFromEnv() {
 	if r.ClientID == "" {
 		r.ClientID = os.Getenv("REDDIT_CLIENT_ID")
@@ -283,11 +303,12 @@ func (a *api) upsertAccountsHandler(w http.ResponseWriter, r *http.Request) {
 
 	for i, req := range reqs {
 		delete(accsMap, strings.ToLower(req.Username))
+		req.fillRedditCredsFromHeader(r.Header)
 		req.fillRedditCredsFromEnv()
 
 		// Defensive: registerAccount → NewAuthenticatedClient panics on empty
 		// tokens. Return a clean 422 with diagnostics if anything's still
-		// missing after the env-var backfill.
+		// missing after the header/env backfills.
 		if req.AccessToken == "" || req.RefreshToken == "" || req.ClientID == "" {
 			a.logger.Error("upsertAccounts missing credentials",
 				zap.Int("index", i),
@@ -333,7 +354,21 @@ func (a *api) upsertAccountHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	req.fillRedditCredsFromHeader(r.Header)
 	req.fillRedditCredsFromEnv()
+
+	// Defensive: registerAccount → NewAuthenticatedClient panics on empty
+	// tokens, same as the bulk handler above.
+	if req.AccessToken == "" || req.RefreshToken == "" || req.ClientID == "" {
+		a.logger.Error("upsertAccount missing credentials",
+			zap.String("username", req.Username),
+			zap.Bool("has_access_token", req.AccessToken != ""),
+			zap.Bool("has_refresh_token", req.RefreshToken != ""),
+			zap.Bool("has_client_id", req.ClientID != ""),
+		)
+		a.errorResponse(w, r, 422, fmt.Errorf("account %q missing required credentials in request body", req.Username))
+		return
+	}
 
 	if _, status, err := a.registerAccount(ctx, req, &dev); err != nil {
 		a.logger.Error("failed to register account", zap.Error(err))

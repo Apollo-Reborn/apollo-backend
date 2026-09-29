@@ -103,6 +103,7 @@ services:
       - ./docker/migrate.sh:/migrate.sh:ro
       - ./migrations/000013_restore_live_activities.up.sql:/patches/000013_restore_live_activities.up.sql:ro
       - ./migrations/000014_add_device_transport.up.sql:/patches/000014_add_device_transport.up.sql:ro
+      - ./migrations/000015_add_live_activity_show_avatars.up.sql:/patches/000015_add_live_activity_show_avatars.up.sql:ro
     depends_on:
       postgres:
         condition: service_healthy

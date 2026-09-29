@@ -28,6 +28,12 @@ type LiveActivity struct {
 	Subreddit   string
 	NextCheckAt time.Time
 	ExpiresAt   time.Time
+
+	// ShowAvatars asks the worker to embed the newest comment author's
+	// profile picture in each push. The tweak opts in at registration when
+	// the user has Show User Profile Pictures on
+	// (X-Apollo-Live-Activity-Avatars).
+	ShowAvatars bool
 }
 
 func (la *LiveActivity) Validate() error {

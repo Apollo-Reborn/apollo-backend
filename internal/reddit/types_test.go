@@ -159,6 +159,41 @@ func TestUserResponseParsing(t *testing.T) {
 	assert.Equal(t, "1ia22", u.ID)
 	assert.Equal(t, "changelog", u.Name)
 	assert.Equal(t, true, u.AcceptFollowers)
+
+	// Default avatar: the profile subreddit's icon is the only candidate
+	// (snoovatar_img is empty, community_icon is null).
+	assert.Equal(t, "https://www.redditstatic.com/avatars/defaults/v2/avatar_default_2.png", u.ProfileIconURL)
+	assert.Equal(t, "", u.SnoovatarURL)
+	assert.Equal(t, "", u.CommunityIcon)
+	assert.Equal(t, "https://www.redditstatic.com/avatars/defaults/v2/avatar_default_2.png", u.AvatarURL())
+}
+
+func TestUserResponseAvatarURL(t *testing.T) {
+	t.Parallel()
+
+	bb, err := ioutil.ReadFile("testdata/user_about_snoovatar.json")
+	assert.NoError(t, err)
+
+	parser := NewTestParser(t)
+	val, err := parser.ParseBytes(bb)
+	assert.NoError(t, err)
+
+	u := reddit.NewUserResponse(val).(*reddit.UserResponse)
+
+	// A snoovatar user: the profile icon is the headshot, which wins over the
+	// full-body snoovatar image.
+	headshot := "https://styles.redditmedia.com/t5_9zz9z/styles/profileIcon_snoo0f1e2d3c-4b5a-4968-8778-a6b5c4d3e2f1-headshot.png?width=256&height=256&crop=256:256,smart&s=0123456789abcdef0123456789abcdef01234567"
+	assert.Equal(t, headshot, u.ProfileIconURL)
+	assert.Equal(t, "https://i.redd.it/snoovatar/avatars/0f1e2d3c-4b5a-4968-8778-a6b5c4d3e2f1.png", u.SnoovatarURL)
+	assert.Equal(t, headshot, u.AvatarURL())
+
+	// Fallback order when earlier candidates are missing.
+	u.ProfileIconURL = ""
+	assert.Equal(t, "https://i.redd.it/snoovatar/avatars/0f1e2d3c-4b5a-4968-8778-a6b5c4d3e2f1.png", u.AvatarURL())
+	u.SnoovatarURL = ""
+	assert.Equal(t, headshot, u.AvatarURL(), "falls back to data.icon_img")
+	u.IconURL = ""
+	assert.Equal(t, "", u.AvatarURL())
 }
 
 func TestUserPostsParsing(t *testing.T) {

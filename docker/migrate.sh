@@ -23,3 +23,10 @@ else
   psql -h postgres -U apollo -d apollo -v ON_ERROR_STOP=1 -f /patches/000014_add_device_transport.up.sql
   echo "device transport patch applied"
 fi
+
+if psql -h postgres -U apollo -d apollo -tAc "SELECT column_name FROM information_schema.columns WHERE table_name='live_activities' AND column_name='show_avatars'" | grep -q show_avatars; then
+  echo "live_activities.show_avatars present, skipping patch"
+else
+  psql -h postgres -U apollo -d apollo -v ON_ERROR_STOP=1 -f /patches/000015_add_live_activity_show_avatars.up.sql
+  echo "live activity avatars patch applied"
+fi

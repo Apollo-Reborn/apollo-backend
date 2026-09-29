@@ -79,7 +79,10 @@ CREATE TABLE live_activities (
     subreddit character varying(32) NOT NULL DEFAULT '',
     next_check_at timestamp without time zone,
     expires_at timestamp without time zone,
-    development boolean DEFAULT FALSE
+    development boolean DEFAULT FALSE,
+    -- Embed the newest comment author's avatar in each push (the tweak opts
+    -- in when Show User Profile Pictures is on). Mirrors migrations/000015.
+    show_avatars boolean NOT NULL DEFAULT FALSE
 );
 
 CREATE INDEX live_activities_next_check_at_idx ON live_activities(next_check_at);

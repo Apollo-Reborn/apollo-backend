@@ -27,6 +27,25 @@ type liveActivityRequest struct {
 	Subreddit       string `json:"subreddit"`
 	Development     bool   `json:"development"`
 	SandboxReceipt  string `json:"sandboxReceipt"`
+	// ShowAvatars opts in to profile pictures in the pushes. Apollo's own
+	// body never carries it; the tweak sends the X-Apollo-Live-Activity-Avatars
+	// header (see liveActivityAvatarsRequested).
+	ShowAvatars bool `json:"show_avatars"`
+}
+
+// liveActivityAvatarsHeader carries the tweak's Show User Profile Pictures
+// setting. Like the device-registration headers, it's the reliable channel:
+// Apollo can post its registrations as upload tasks whose body the tweak's
+// request rewrite never reaches.
+const liveActivityAvatarsHeader = "X-Apollo-Live-Activity-Avatars"
+
+// liveActivityAvatarsRequested reports whether the registration opted in to
+// avatars. The header wins over the body when present.
+func liveActivityAvatarsRequested(r *http.Request, req *liveActivityRequest) bool {
+	if v := strings.TrimSpace(r.Header.Get(liveActivityAvatarsHeader)); v != "" {
+		return v == "1" || strings.EqualFold(v, "true")
+	}
+	return req.ShowAvatars
 }
 
 // UnmarshalJSON accepts both snake_case and the camelCase token keys Apollo's
@@ -94,6 +113,7 @@ func (a *api) createLiveActivityHandler(w http.ResponseWriter, r *http.Request) 
 		RedditAccountID: rid,
 		ThreadID:        req.ThreadID,
 		Subreddit:       req.Subreddit,
+		ShowAvatars:     liveActivityAvatarsRequested(r, req),
 	}
 
 	if err := la.Validate(); err != nil {

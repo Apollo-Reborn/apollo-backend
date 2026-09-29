@@ -1,0 +1,37 @@
+{
+  "kind": "t2",
+  "data": {
+    "is_employee": false,
+    "subreddit": {
+      "banner_img": "https://b.thumbs.redditmedia.com/fixturebannerfixturebannerfixturebanner00.png",
+      "community_icon": null,
+      "icon_color": "",
+      "display_name": "u_snoovatar_fixture",
+      "title": "Snoovatar Fixture",
+      "icon_size": [
+        256,
+        256
+      ],
+      "icon_img": "https://styles.redditmedia.com/t5_9zz9z/styles/profileIcon_snoo0f1e2d3c-4b5a-4968-8778-a6b5c4d3e2f1-headshot.png?width=256&height=256&crop=256:256,smart&s=0123456789abcdef0123456789abcdef01234567",
+      "is_default_icon": false,
+      "display_name_prefixed": "u/snoovatar_fixture",
+      "name": "t5_9zz9z",
+      "url": "/user/snoovatar_fixture/",
+      "accept_followers": true,
+      "subreddit_type": "user"
+    },
+    "snoovatar_size": [
+      380,
+      600
+    ],
+    "id": "1zz9",
+    "verified": true,
+    "icon_img": "https://styles.redditmedia.com/t5_9zz9z/styles/profileIcon_snoo0f1e2d3c-4b5a-4968-8778-a6b5c4d3e2f1-headshot.png?width=256&height=256&crop=256:256,smart&s=0123456789abcdef0123456789abcdef01234567",
+    "pref_show_snoovatar": true,
+    "name": "snoovatar_fixture",
+    "created": 1118030400.0,
+    "created_utc": 1118030400.0,
+    "snoovatar_img": "https://i.redd.it/snoovatar/avatars/0f1e2d3c-4b5a-4968-8778-a6b5c4d3e2f1.png",
+    "accept_followers": true
+  }
+}

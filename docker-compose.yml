@@ -38,6 +38,7 @@ services:
       POSTGRES_DB: apollo
     volumes:
       - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U apollo -d apollo"]
       interval: 5s
@@ -57,6 +58,7 @@ services:
       SERVER_RESET_QUERY: DISCARD ALL
       AUTH_TYPE: scram-sha-256
       ADMIN_USERS: postgres,apollo
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
@@ -64,6 +66,7 @@ services:
   redis-queue:
     image: redis:7-alpine
     command: ["redis-server", "--maxmemory-policy", "noeviction"]
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -73,6 +76,7 @@ services:
   redis-locks:
     image: redis:7-alpine
     command: ["redis-server", "--maxmemory-policy", "noeviction"]
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -84,6 +88,7 @@ services:
   statsd:
     image: alpine:3.19
     entrypoint: /statsd.sh
+    restart: unless-stopped
     volumes:
       - ./docker/statsd.sh:/statsd.sh:ro
     expose:

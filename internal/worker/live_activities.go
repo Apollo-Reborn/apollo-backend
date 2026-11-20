@@ -1,12 +1,18 @@
 package worker
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"sort"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/DataDog/datadog-go/statsd"
 	"github.com/adjust/rmq/v5"
@@ -17,12 +23,41 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 
+	"github.com/christianselig/apollo-backend/internal/avatar"
 	"github.com/christianselig/apollo-backend/internal/domain"
 	"github.com/christianselig/apollo-backend/internal/reddit"
 	"github.com/christianselig/apollo-backend/internal/repository"
 )
 
 var liveActivityTags = []string{"queue:live-activities"}
+
+const (
+	// maxLiveActivityPayloadBytes is APNs' size limit for a liveactivity
+	// push. A larger payload is refused (413), and a refused push deletes the
+	// activity (see Consume), so every payload is fitted under it.
+	maxLiveActivityPayloadBytes = 4096
+
+	// liveActivityCommentRunes caps the comment text. The Lock Screen shows
+	// at most three lines of it and the Dynamic Island one, so the cap never
+	// shows, but an uncapped long comment alone can exceed the APNs limit.
+	liveActivityCommentRunes = 500
+
+	// liveActivityCommentRunesWithAvatar is how far the comment may be
+	// trimmed to keep an avatar in the payload before the avatar is dropped
+	// instead (still more text than the Lock Screen shows).
+	liveActivityCommentRunesWithAvatar = 200
+
+	// Avatar cache lifetimes. Authors of fresh comments are mostly new each
+	// poll, but the top candidate often repeats for several polls in a row.
+	liveActivityAvatarTTL      = 24 * time.Hour
+	liveActivityAvatarNoneTTL  = 6 * time.Hour    // user has no usable picture
+	liveActivityAvatarErrorTTL = 10 * time.Minute // lookup failed; retry later
+	liveActivityAvatarNone     = "-"
+
+	// liveActivityAvatarTimeout bounds the whole lookup (profile + image) so
+	// a slow Reddit never holds up the push; the push goes out without it.
+	liveActivityAvatarTimeout = 5 * time.Second
+)
 
 // DynamicIslandNotification is the ActivityKit content-state Apollo's
 // FollowThreadActivityAttributes decodes from liveactivity pushes.
@@ -34,6 +69,12 @@ type DynamicIslandNotification struct {
 	CommentBody      string `json:"commentBody,omitempty"`
 	CommentAge       int64  `json:"commentAge,omitempty"`
 	CommentScore     int64  `json:"commentScore,omitempty"`
+	// CommentAuthorAvatar is the comment author's profile picture as a
+	// base64-encoded 48x48 JPEG (internal/avatar), present only when the
+	// activity opted in. The bytes ride in the push because a Live Activity
+	// has no network access to fetch an image URL itself. Apps and widgets
+	// that don't know the key ignore it.
+	CommentAuthorAvatar string `json:"commentAuthorAvatar,omitempty"`
 }
 
 type liveActivitiesWorker struct {
@@ -55,6 +96,8 @@ type liveActivitiesWorker struct {
 
 	liveActivityRepo domain.LiveActivityRepository
 	accountRepo      domain.AccountRepository
+
+	avatarClient *http.Client
 }
 
 func NewLiveActivitiesWorker(ctx context.Context, logger *zap.Logger, tracer trace.Tracer, statsd statsd.ClientInterface, db *pgxpool.Pool, redis *redis.Client, queue rmq.Connection, consumers int, apns *token.Token, apnsTopic string) Worker {
@@ -80,6 +123,8 @@ func NewLiveActivitiesWorker(ctx context.Context, logger *zap.Logger, tracer tra
 
 		repository.NewPostgresLiveActivity(db),
 		repository.NewPostgresAccount(db),
+
+		avatar.NewClient(),
 	}
 }
 
@@ -291,6 +336,10 @@ func (lac *liveActivitiesConsumer) Consume(delivery rmq.Delivery) {
 		din.CommentBody = comment.Body
 		din.CommentAge = comment.CreatedAt.Unix()
 		din.CommentScore = comment.Score
+
+		if la.ShowAvatars {
+			din.CommentAuthorAvatar = lac.commentAuthorAvatar(ctx, rac, comment.Author, logger)
+		}
 	}
 
 	ev := "update"
@@ -298,14 +347,11 @@ func (lac *liveActivitiesConsumer) Consume(delivery rmq.Delivery) {
 		ev = "end"
 	}
 
-	bb, _ := json.Marshal(map[string]interface{}{
-		"aps": map[string]interface{}{
-			"content-state":  din,
-			"dismissal-date": la.ExpiresAt.Unix(),
-			"event":          ev,
-			"timestamp":      now.Unix(),
-		},
-	})
+	bb, err := liveActivityPayload(din, ev, la.ExpiresAt.Unix(), now.Unix())
+	if err != nil {
+		logger.Error("failed to encode live activity payload", zap.Error(err))
+		return
+	}
 
 	notification := &apns2.Notification{
 		DeviceToken: la.APNSToken,
@@ -353,4 +399,169 @@ func (lac *liveActivitiesConsumer) Consume(delivery rmq.Delivery) {
 	}
 
 	logger.Debug("finishing job")
+}
+
+// commentAuthorAvatar returns the author's profile picture as the base64 JPEG
+// DynamicIslandNotification carries, or "" when there is none. Results,
+// including misses, are cached in Redis so a comment that stays on top for
+// several polls costs one lookup. Failures never block the push.
+func (lac *liveActivitiesConsumer) commentAuthorAvatar(ctx context.Context, rac *reddit.AuthenticatedClient, author string, logger *zap.Logger) string {
+	if author == "" || author == "[deleted]" {
+		return ""
+	}
+
+	key := fmt.Sprintf("live-activities:avatars:%s", strings.ToLower(author))
+	if cached, err := lac.redis.Get(ctx, key).Result(); err == nil {
+		_ = lac.statsd.Incr("apollo.live_activities.avatars", []string{"result:cached"}, 0.1)
+		if cached == liveActivityAvatarNone {
+			return ""
+		}
+		return cached
+	}
+
+	encoded, err := lac.fetchCommentAuthorAvatar(ctx, rac, author)
+
+	value, ttl, result := encoded, liveActivityAvatarTTL, "fetched"
+	switch {
+	case err != nil:
+		logger.Debug("failed to fetch comment author avatar", zap.String("author", author), zap.Error(err))
+		value, ttl, result = liveActivityAvatarNone, liveActivityAvatarErrorTTL, "error"
+	case encoded == "":
+		value, ttl, result = liveActivityAvatarNone, liveActivityAvatarNoneTTL, "none"
+	}
+	_ = lac.statsd.Incr("apollo.live_activities.avatars", []string{"result:" + result}, 0.1)
+
+	if err := lac.redis.Set(ctx, key, value, ttl).Err(); err != nil {
+		logger.Debug("failed to cache comment author avatar", zap.Error(err))
+	}
+	return encoded
+}
+
+func (lac *liveActivitiesConsumer) fetchCommentAuthorAvatar(ctx context.Context, rac *reddit.AuthenticatedClient, author string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, liveActivityAvatarTimeout)
+	defer cancel()
+
+	// No retries: a missing or suspended user 404s, and the default backoff
+	// schedule would hold the push for seconds.
+	user, err := rac.UserAbout(ctx, author, reddit.WithRetry(false), reddit.WithTags([]string{"url:/user/about"}))
+	if err != nil {
+		return "", err
+	}
+
+	src := user.AvatarURL()
+	if src == "" {
+		return "", nil
+	}
+	if _, ok := avatar.AllowedURL(src); !ok {
+		// Not on Reddit's image hosts; treat as no picture rather than an error.
+		return "", nil
+	}
+
+	data, err := avatar.Fetch(ctx, lac.avatarClient, src)
+	if err != nil {
+		return "", err
+	}
+	thumb, err := avatar.Thumbnail(data)
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(thumb), nil
+}
+
+// liveActivityPayload encodes the APNs liveactivity payload and keeps it
+// under maxLiveActivityPayloadBytes. The comment text is capped first; if the
+// payload is still too big, the text is trimmed further while keeping the
+// avatar, down to liveActivityCommentRunesWithAvatar; past that the avatar is
+// dropped (the words matter more than the picture) and the text is trimmed
+// only as far as it has to be.
+func liveActivityPayload(din DynamicIslandNotification, event string, dismissal, timestamp int64) ([]byte, error) {
+	body := din.CommentBody
+
+	encodeWith := func(runes int) ([]byte, error) {
+		d := din
+		d.CommentBody = truncateRunes(body, runes)
+		return encodeLiveActivityPayload(d, event, dismissal, timestamp)
+	}
+
+	bb, err := encodeWith(liveActivityCommentRunes)
+	if err != nil || len(bb) <= maxLiveActivityPayloadBytes {
+		return bb, err
+	}
+
+	if din.CommentAuthorAvatar != "" {
+		if bb, ok, err := longestFittingPayload(encodeWith, liveActivityCommentRunesWithAvatar, liveActivityCommentRunes); err != nil || ok {
+			return bb, err
+		}
+		din.CommentAuthorAvatar = ""
+	}
+
+	bb, ok, err := longestFittingPayload(encodeWith, 0, liveActivityCommentRunes)
+	if err != nil || ok {
+		return bb, err
+	}
+	// Even an empty comment doesn't fit (it can't with a Reddit username);
+	// send the smallest payload and let APNs report it.
+	return encodeWith(0)
+}
+
+// longestFittingPayload binary-searches the largest comment length in
+// [lo, hi] whose payload fits, returning ok=false when even lo doesn't.
+func longestFittingPayload(encodeWith func(int) ([]byte, error), lo, hi int) ([]byte, bool, error) {
+	var best []byte
+	for lo <= hi {
+		mid := lo + (hi-lo)/2
+		bb, err := encodeWith(mid)
+		if err != nil {
+			return nil, false, err
+		}
+		if len(bb) <= maxLiveActivityPayloadBytes {
+			best = bb
+			lo = mid + 1
+		} else {
+			hi = mid - 1
+		}
+	}
+	return best, best != nil, nil
+}
+
+func encodeLiveActivityPayload(din DynamicIslandNotification, event string, dismissal, timestamp int64) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	// Comment text is shown as-is by the widget; \u003c-style escapes for
+	// <, > and & would only spend payload bytes (6 each instead of 1).
+	enc.SetEscapeHTML(false)
+	err := enc.Encode(map[string]interface{}{
+		"aps": map[string]interface{}{
+			"content-state":  din,
+			"dismissal-date": dismissal,
+			"event":          event,
+			"timestamp":      timestamp,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if buf.Len() == 0 {
+		return nil, errors.New("empty live activity payload")
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
+}
+
+// truncateRunes shortens s to at most n runes, ending with an ellipsis when
+// anything was cut.
+func truncateRunes(s string, n int) string {
+	if utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	if n <= 0 {
+		return ""
+	}
+	cut := 0
+	for i := range s {
+		if cut == n {
+			return strings.TrimRight(s[:i], " \t\r\n") + "…"
+		}
+		cut++
+	}
+	return s
 }

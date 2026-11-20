@@ -116,6 +116,15 @@ func (a *api) Routes() *mux.Router {
 	r.HandleFunc("/v1/device/{apns}/account/{redditID}/watcher/{watcherID}", a.editWatcherHandler).Methods("PATCH")
 	r.HandleFunc("/v1/device/{apns}/account/{redditID}/watchers", a.listWatchersHandler).Methods("GET")
 
+	// The same endpoints with the {redditID} segment missing. Apollo builds
+	// these URLs from its locally stored account ID; when that is empty it
+	// sends `/account//notifications`, which a path-cleaning proxy (or mux
+	// itself) 301s to the forms below. Without these routes they fall
+	// through to the DELETE-only `/account/{redditID}` route and 405.
+	r.HandleFunc("/v1/device/{apns}/account/notifications", a.withSoleAccount(a.notificationsAccountHandler)).Methods("PATCH")
+	r.HandleFunc("/v1/device/{apns}/account/notifications", a.withSoleAccount(a.getNotificationsAccountHandler)).Methods("GET")
+	r.HandleFunc("/v1/device/{apns}/account/watchers", a.withSoleAccount(a.listWatchersHandler)).Methods("GET")
+
 	// Diagnostic stubs for endpoints Apollo iOS posts to under its three
 	// legacy hosts (apollopushserver.xyz, beta.apollonotifications.com,
 	// apolloreq.com) that the tweak rewrites here. Their exact request /
@@ -127,6 +136,7 @@ func (a *api) Routes() *mux.Router {
 	r.HandleFunc("/v1/receipt", a.checkReceiptHandler).Methods("POST")
 	r.HandleFunc("/v1/receipt/{apns}", a.checkReceiptHandler).Methods("POST")
 	r.NotFoundHandler = http.HandlerFunc(a.notFoundLogger)
+	r.MethodNotAllowedHandler = http.HandlerFunc(a.methodNotAllowedLogger)
 
 	r.Use(a.loggingMiddleware)
 	r.Use(a.requestIdMiddleware)
@@ -150,6 +160,30 @@ func (a *api) registrationAuthMiddleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// withSoleAccount serves account-scoped routes whose URL carries no Reddit
+// account ID by falling back to the device's only registered account. With
+// zero or several accounts there is nothing safe to pick, so it 400s.
+func (a *api) withSoleAccount(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		vars := mux.Vars(r)
+
+		accs, err := a.accountRepo.GetByAPNSToken(r.Context(), vars["apns"])
+		if err != nil {
+			a.errorResponse(w, r, 500, err)
+			return
+		}
+		if len(accs) != 1 {
+			_ = a.statsd.Incr("api.account_id.missing", []string{"resolved:false"}, 1.0)
+			a.errorResponse(w, r, 400, fmt.Errorf("request has no reddit account id and device has %d accounts", len(accs)))
+			return
+		}
+
+		_ = a.statsd.Incr("api.account_id.missing", []string{"resolved:true"}, 1.0)
+		vars["redditID"] = accs[0].AccountID
+		next(w, mux.SetURLVars(r, vars))
+	}
 }
 
 type LoggingResponseWriter struct {

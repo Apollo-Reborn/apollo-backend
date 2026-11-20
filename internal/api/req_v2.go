@@ -83,3 +83,15 @@ func (a *api) notFoundLogger(w http.ResponseWriter, r *http.Request) {
 	)
 	http.NotFound(w, r)
 }
+
+// methodNotAllowedLogger is mux's MethodNotAllowedHandler. mux skips the
+// router middleware when a path matches but the method doesn't, so without
+// this a 405 leaves no trace in the API log.
+func (a *api) methodNotAllowedLogger(w http.ResponseWriter, r *http.Request) {
+	a.logger.Error("method not allowed",
+		zap.String("method", r.Method),
+		zap.String("path", r.URL.Path),
+	)
+	_ = a.statsd.Incr("api.calls", []string{"status:405"}, 1.0)
+	w.WriteHeader(http.StatusMethodNotAllowed)
+}

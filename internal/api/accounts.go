@@ -213,7 +213,7 @@ func (req *accountRegistrationRequest) toAccount() domain.Account {
 // registerAccount validates the supplied credentials by performing the same
 // refresh-and-me dance the original handler did, persists the account, and
 // associates it with the device. Shared by both registration handlers.
-func (a *api) registerAccount(ctx context.Context, req accountRegistrationRequest, dev *domain.Device) (domain.Account, int, error) {
+func (a *api) registerAccount(ctx context.Context, req accountRegistrationRequest, dev *domain.Device) (int, error) {
 	acct := req.toAccount()
 
 	creds := reddit.AuthCredentials{
@@ -228,7 +228,7 @@ func (a *api) registerAccount(ctx context.Context, req accountRegistrationReques
 	rac := a.reddit.NewAuthenticatedClient(creds)
 	tokens, err := rac.RefreshTokens(ctx)
 	if err != nil {
-		return acct, 422, fmt.Errorf("failed to refresh tokens: %w", err)
+		return 422, fmt.Errorf("failed to refresh tokens: %w", err)
 	}
 
 	acct.TokenExpiresAt = time.Now().Add(tokens.Expiry)
@@ -241,18 +241,18 @@ func (a *api) registerAccount(ctx context.Context, req accountRegistrationReques
 
 	me, err := rac.Me(ctx)
 	if err != nil {
-		return acct, 500, fmt.Errorf("failed to fetch user info: %w", err)
+		return 500, fmt.Errorf("failed to fetch user info: %w", err)
 	}
 
 	if me.NormalizedUsername() != acct.NormalizedUsername() {
-		return acct, 401, fmt.Errorf("wrong user: expected %s, got %s", me.NormalizedUsername(), acct.NormalizedUsername())
+		return 401, fmt.Errorf("wrong user: expected %s, got %s", me.NormalizedUsername(), acct.NormalizedUsername())
 	}
 
 	acct.AccountID = me.ID
 
 	mi, err := rac.MessageInbox(ctx, reddit.WithQuery("limit", "1"))
 	if err != nil {
-		return acct, 500, err
+		return 500, err
 	}
 
 	if mi.Count > 0 {
@@ -261,14 +261,14 @@ func (a *api) registerAccount(ctx context.Context, req accountRegistrationReques
 	}
 
 	if err := a.accountRepo.CreateOrUpdate(ctx, &acct); err != nil {
-		return acct, 422, err
+		return 422, err
 	}
 
 	if err := a.accountRepo.Associate(ctx, &acct, dev); err != nil {
-		return acct, 422, err
+		return 422, err
 	}
 
-	return acct, http.StatusOK, nil
+	return http.StatusOK, nil
 }
 
 func (a *api) upsertAccountsHandler(w http.ResponseWriter, r *http.Request) {
@@ -321,7 +321,7 @@ func (a *api) upsertAccountsHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if _, status, err := a.registerAccount(ctx, req, &dev); err != nil {
+		if status, err := a.registerAccount(ctx, req, &dev); err != nil {
 			a.errorResponse(w, r, status, err)
 			return
 		}
@@ -370,7 +370,7 @@ func (a *api) upsertAccountHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, status, err := a.registerAccount(ctx, req, &dev); err != nil {
+	if status, err := a.registerAccount(ctx, req, &dev); err != nil {
 		a.logger.Error("failed to register account", zap.Error(err))
 		a.errorResponse(w, r, status, err)
 		return

@@ -98,6 +98,34 @@ func TestPostgresLiveActivity_CreateIsUpsert(t *testing.T) {
 	assert.Equal(t, firstID, again.ID)
 }
 
+func TestPostgresLiveActivity_ShowAvatarsFollowsLatestRegistration(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	repo := NewTestPostgresLiveActivity(t)
+
+	tok := newTestLiveActivityToken(t)
+	la := &domain.LiveActivity{
+		APNSToken:       tok,
+		RedditAccountID: "xyz123",
+		ThreadID:        "abc987",
+		Subreddit:       "apolloapp",
+	}
+	require.NoError(t, repo.Create(ctx, la))
+
+	got, err := repo.Get(ctx, tok)
+	require.NoError(t, err)
+	assert.False(t, got.ShowAvatars, "avatars are opt-in")
+
+	// Re-registering with the setting turned on updates the row in place.
+	la.ShowAvatars = true
+	require.NoError(t, repo.Create(ctx, la))
+
+	got, err = repo.Get(ctx, tok)
+	require.NoError(t, err)
+	assert.True(t, got.ShowAvatars)
+}
+
 func TestPostgresLiveActivity_RemoveStale(t *testing.T) {
 	t.Parallel()
 

@@ -34,6 +34,7 @@ func (p *postgresLiveActivityRepository) fetch(ctx context.Context, query string
 			&la.NextCheckAt,
 			&la.ExpiresAt,
 			&la.Development,
+			&la.ShowAvatars,
 		); err != nil {
 			return nil, err
 		}
@@ -44,7 +45,7 @@ func (p *postgresLiveActivityRepository) fetch(ctx context.Context, query string
 
 func (p *postgresLiveActivityRepository) Get(ctx context.Context, apnsToken string) (domain.LiveActivity, error) {
 	query := `
-		SELECT id, apns_token, reddit_account_id, thread_id, subreddit, next_check_at, expires_at, development
+		SELECT id, apns_token, reddit_account_id, thread_id, subreddit, next_check_at, expires_at, development, show_avatars
 		FROM live_activities
 		WHERE apns_token = $1`
 
@@ -60,16 +61,17 @@ func (p *postgresLiveActivityRepository) Get(ctx context.Context, apnsToken stri
 }
 
 // Create upserts on apns_token: re-registering an existing activity extends
-// its lifetime instead of erroring, so app retries are harmless.
+// its lifetime instead of erroring, so app retries are harmless. The avatar
+// opt-in follows the newest registration, so it tracks the app's setting.
 func (p *postgresLiveActivityRepository) Create(ctx context.Context, la *domain.LiveActivity) error {
 	now := time.Now()
 	la.NextCheckAt = now
 	la.ExpiresAt = now.Add(domain.LiveActivityDuration)
 
 	query := `
-		INSERT INTO live_activities (apns_token, reddit_account_id, thread_id, subreddit, next_check_at, expires_at, development)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		ON CONFLICT (apns_token) DO UPDATE SET expires_at = EXCLUDED.expires_at, next_check_at = EXCLUDED.next_check_at
+		INSERT INTO live_activities (apns_token, reddit_account_id, thread_id, subreddit, next_check_at, expires_at, development, show_avatars)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		ON CONFLICT (apns_token) DO UPDATE SET expires_at = EXCLUDED.expires_at, next_check_at = EXCLUDED.next_check_at, show_avatars = EXCLUDED.show_avatars
 		RETURNING id`
 
 	return p.conn.QueryRow(ctx, query,
@@ -80,6 +82,7 @@ func (p *postgresLiveActivityRepository) Create(ctx context.Context, la *domain.
 		la.NextCheckAt,
 		la.ExpiresAt,
 		la.Development,
+		la.ShowAvatars,
 	).Scan(&la.ID)
 }
 

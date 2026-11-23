@@ -208,6 +208,24 @@ type UserResponse struct {
 
 	AcceptFollowers bool
 	Name            string
+
+	// Profile picture candidates, as /user/<name>/about reports them.
+	ProfileIconURL string // data.subreddit.icon_img (headshot, upload or default)
+	CommunityIcon  string // data.subreddit.community_icon
+	SnoovatarURL   string // data.snoovatar_img (full-body snoovatar)
+	IconURL        string // data.icon_img
+}
+
+// AvatarURL picks the user's profile picture in the order Apollo Reborn's
+// in-app avatars use (ApolloUserProfileCache): the profile subreddit's icon,
+// its community icon, the snoovatar, then the account icon.
+func (ur *UserResponse) AvatarURL() string {
+	for _, candidate := range []string{ur.ProfileIconURL, ur.CommunityIcon, ur.SnoovatarURL, ur.IconURL} {
+		if candidate != "" {
+			return candidate
+		}
+	}
+	return ""
 }
 
 func NewUserResponse(val *fastjson.Value) interface{} {
@@ -218,6 +236,11 @@ func NewUserResponse(val *fastjson.Value) interface{} {
 	ur.ID = string(data.GetStringBytes("id"))
 	ur.Name = string(data.GetStringBytes("name"))
 	ur.AcceptFollowers = data.GetBool("accept_followers")
+
+	ur.ProfileIconURL = string(data.GetStringBytes("subreddit", "icon_img"))
+	ur.CommunityIcon = string(data.GetStringBytes("subreddit", "community_icon"))
+	ur.SnoovatarURL = string(data.GetStringBytes("snoovatar_img"))
+	ur.IconURL = string(data.GetStringBytes("icon_img"))
 
 	return ur
 }
